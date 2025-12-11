@@ -1,8 +1,10 @@
 // -----------------------------------------------------------
-//  API COMPLETA GOOGLE CALENDAR
-//  Agendamentos para Clínica SaúdeSim
-//  Com bloqueio de rotas, service-account via Secret File,
-//  validação de token e conversão de datas.
+//  API GOOGLE CALENDAR - CLÍNICA SAÚDESIM
+//  ✔ Sem convidados
+//  ✔ Retorna link do evento
+//  ✔ Service Account via Secret File
+//  ✔ Validação de Token do BotConversa
+//  ✔ Bloqueio de rotas indevidas
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -13,7 +15,7 @@ const app = express();
 app.use(express.json());
 
 // -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS — PERMITIR APENAS AS ROTAS DA API
+//  BLOQUEIO DE ROTAS — SÓ PERMITE AS 3 ROTAS DA API
 // -----------------------------------------------------------
 
 app.use((req, res, next) => {
@@ -27,7 +29,7 @@ app.use((req, res, next) => {
 });
 
 // -----------------------------------------------------------
-//  CARREGAR SERVICE ACCOUNT DO ARQUIVO SECRETO
+//  CARREGAR SERVICE ACCOUNT DO SECRET FILE
 // -----------------------------------------------------------
 
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
@@ -42,7 +44,7 @@ let serviceAccount = null;
 try {
   serviceAccount = require(SERVICE_ACCOUNT_PATH);
 } catch (error) {
-  console.error("❌ ERRO ao carregar arquivo service-account.json:", error);
+  console.error("❌ ERRO ao carregar service-account.json:", error);
   process.exit(1);
 }
 
@@ -50,7 +52,7 @@ const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
 const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
 
 // -----------------------------------------------------------
-//  VARIÁVEIS DO ENV
+//  VARIÁVEIS DO AMBIENTE
 // -----------------------------------------------------------
 
 const {
@@ -78,13 +80,12 @@ function getJwtClient() {
 }
 
 // -----------------------------------------------------------
-//  FUNÇÕES DE CONVERSÃO
+//  FUNÇÕES DE DATA
 // -----------------------------------------------------------
 
 function toISODateTime(dateStr, timeStr) {
   const [d, m, y] = dateStr.split("/");
-  const iso = `${y}-${m}-${d}T${timeStr}:00-03:00`;
-  return iso;
+  return `${y}-${m}-${d}T${timeStr}:00-03:00`;
 }
 
 function addOneHourISO(startISO) {
@@ -94,7 +95,7 @@ function addOneHourISO(startISO) {
 }
 
 // -----------------------------------------------------------
-//  MIDDLEWARE PARA VALIDAR TOKEN DO BOTCONVERSA
+//  VALIDAÇÃO DE TOKEN DO BOTCONVERSA
 // -----------------------------------------------------------
 
 function validateToken(req, res, next) {
@@ -108,7 +109,7 @@ function validateToken(req, res, next) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: CRIAR EVENTO
+//  CRIAR EVENTO (SEM CONVIDADOS)
 // -----------------------------------------------------------
 
 app.post("/create-event", validateToken, async (req, res) => {
@@ -132,10 +133,10 @@ app.post("/create-event", validateToken, async (req, res) => {
     const event = {
       summary: `Consulta Clínica SaúdeSim - ${nome}`,
       location: local || "",
-      description: `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
+      description:
+        `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
       start: { dateTime: startISO, timeZone: TIMEZONE },
-      end: { dateTime: endISO, timeZone: TIMEZONE },
-      attendees: [{ email }]
+      end: { dateTime: endISO, timeZone: TIMEZONE }
     };
 
     const response = await calendar.events.insert({
@@ -145,7 +146,8 @@ app.post("/create-event", validateToken, async (req, res) => {
 
     return res.json({
       status: "created",
-      event_id: response.data.id
+      event_id: response.data.id,
+      event_link: response.data.htmlLink
     });
 
   } catch (err) {
@@ -155,7 +157,7 @@ app.post("/create-event", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: ATUALIZAR EVENTO
+//  ATUALIZAR EVENTO
 // -----------------------------------------------------------
 
 app.post("/update-event", validateToken, async (req, res) => {
@@ -179,12 +181,12 @@ app.post("/update-event", validateToken, async (req, res) => {
     const event = original.data;
 
     if (nome) event.summary = `Consulta Clínica SaúdeSim - ${nome}`;
-    if (email) event.attendees = [{ email }];
     if (local) event.location = local;
 
     if (data && hora) {
       const startISO = toISODateTime(data, hora);
       const endISO = addOneHourISO(startISO);
+
       event.start = { dateTime: startISO, timeZone: TIMEZONE };
       event.end = { dateTime: endISO, timeZone: TIMEZONE };
     }
@@ -204,7 +206,7 @@ app.post("/update-event", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: DELETAR EVENTO
+//  DELETAR EVENTO
 // -----------------------------------------------------------
 
 app.post("/delete-event", validateToken, async (req, res) => {
