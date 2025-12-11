@@ -1,55 +1,15 @@
 // -----------------------------------------------------------
-//  API GOOGLE CALENDAR - CLÍNICA SAÚDESIM
-//  ✔ Sem convidados
-//  ✔ Retorna link do evento
-//  ✔ Service Account via Secret File
-//  ✔ Validação de Token do BotConversa
-//  ✔ Bloqueio de rotas indevidas
+//  API COMPLETA - CREATE, UPDATE, DELETE Google Calendar
+//  Adaptada para:
+//  GOOGLE_CLIENT_EMAIL = botagenda@api-botconversa-para-agenda-iam.gserviceaccount.com
+//  GOOGLE_CALENDAR_ID  = 2d896e5ad2fcc150e10efe24cce9156ab577442a74b70d9fcd89f7d166c8479c@group.calendar.google.com
 // -----------------------------------------------------------
 
 require("dotenv").config();
 const express = require("express");
 const { google } = require("googleapis");
 const app = express();
-
 app.use(express.json());
-
-// -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS — SÓ PERMITE AS 3 ROTAS DA API
-// -----------------------------------------------------------
-
-app.use((req, res, next) => {
-  const allowed = ["/create-event", "/update-event", "/delete-event"];
-
-  if (!allowed.includes(req.path)) {
-    return res.status(200).send("OK");
-  }
-
-  next();
-});
-
-// -----------------------------------------------------------
-//  CARREGAR SERVICE ACCOUNT DO SECRET FILE
-// -----------------------------------------------------------
-
-const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
-
-if (!SERVICE_ACCOUNT_PATH) {
-  console.error("❌ ERRO: GOOGLE_SA_KEY_FILE não definido no .env!");
-  process.exit(1);
-}
-
-let serviceAccount = null;
-
-try {
-  serviceAccount = require(SERVICE_ACCOUNT_PATH);
-} catch (error) {
-  console.error("❌ ERRO ao carregar service-account.json:", error);
-  process.exit(1);
-}
-
-const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
-const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
 
 // -----------------------------------------------------------
 //  VARIÁVEIS DO AMBIENTE
@@ -57,12 +17,17 @@ const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
 
 const {
   WEBHOOK_SECRET,
-  GOOGLE_CALENDAR_ID,
+  GOOGLE_PRIVATE_KEY,
   TIMEZONE
 } = process.env;
 
-if (!WEBHOOK_SECRET || !GOOGLE_CALENDAR_ID || !GOOGLE_CLIENT_EMAIL || !GOOGLE_PRIVATE_KEY) {
-  console.error("❌ ERRO: Variáveis obrigatórias ausentes!");
+// CLIENT EMAIL e CALENDAR ID segundo os dados que você enviou:
+const GOOGLE_CLIENT_EMAIL = "botagenda@api-botconversa-para-agenda-iam.gserviceaccount.com";
+
+const CALENDAR_ID = "2d896e5ad2fcc150e10efe24cce9156ab577442a74b70d9fcd89f7d166c8479c@group.calendar.google.com";
+
+if (!WEBHOOK_SECRET || !GOOGLE_PRIVATE_KEY) {
+  console.error("❌ ERRO: Variáveis do .env faltando!");
   process.exit(1);
 }
 
@@ -80,7 +45,7 @@ function getJwtClient() {
 }
 
 // -----------------------------------------------------------
-//  FUNÇÕES DE DATA
+//  FUNÇÕES AUXILIARES
 // -----------------------------------------------------------
 
 function toISODateTime(dateStr, timeStr) {
@@ -95,7 +60,7 @@ function addOneHourISO(startISO) {
 }
 
 // -----------------------------------------------------------
-//  VALIDAÇÃO DE TOKEN DO BOTCONVERSA
+//  MIDDLEWARE DE VALIDAÇÃO DO TOKEN DO WEBHOOK
 // -----------------------------------------------------------
 
 function validateToken(req, res, next) {
@@ -109,7 +74,7 @@ function validateToken(req, res, next) {
 }
 
 // -----------------------------------------------------------
-//  CRIAR EVENTO (SEM CONVIDADOS)
+//  ROTA: CRIAR EVENTO
 // -----------------------------------------------------------
 
 app.post("/create-event", validateToken, async (req, res) => {
@@ -120,7 +85,7 @@ app.post("/create-event", validateToken, async (req, res) => {
     } = req.body;
 
     if (!nome || !email || !data || !hora) {
-      return res.status(400).json({ error: "Campos obrigatórios ausentes!" });
+      return res.status(400).json({ error: "Campos obrigatórios ausentes" });
     }
 
     const auth = getJwtClient();
@@ -133,31 +98,27 @@ app.post("/create-event", validateToken, async (req, res) => {
     const event = {
       summary: `Consulta Clínica SaúdeSim - ${nome}`,
       location: local || "",
-      description:
-        `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
-      start: { dateTime: startISO, timeZone: TIMEZONE },
-      end: { dateTime: endISO, timeZone: TIMEZONE }
+      description: `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
+      start: { dateTime: startISO, timeZone: TIMEZONE || "America/Sao_Paulo" },
+      end: { dateTime: endISO, timeZone: TIMEZONE || "America/Sao_Paulo" },
+      attendees: [{ email }]
     };
 
     const response = await calendar.events.insert({
-      calendarId: GOOGLE_CALENDAR_ID,
+      calendarId: CALENDAR_ID,
       resource: event
     });
 
-    return res.json({
-      status: "created",
-      event_id: response.data.id,
-      event_link: response.data.htmlLink
-    });
+    res.json({ status: "created", event_id: response.data.id });
 
   } catch (err) {
-    console.error("ERRO AO CRIAR EVENTO:", err);
-    return res.status(500).json({ error: "internal_error", details: err.message });
+    console.error("Erro ao criar:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // -----------------------------------------------------------
-//  ATUALIZAR EVENTO
+//  ROTA: ATUALIZAR EVENTO
 // -----------------------------------------------------------
 
 app.post("/update-event", validateToken, async (req, res) => {
@@ -167,73 +128,77 @@ app.post("/update-event", validateToken, async (req, res) => {
       tipo_atd, pagto, libras, valor, local
     } = req.body;
 
-    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
+    if (!event_id) {
+      return res.status(400).json({ error: "event_id obrigatório" });
+    }
 
     const auth = getJwtClient();
     await auth.authorize();
     const calendar = google.calendar({ version: "v3", auth });
 
     const original = await calendar.events.get({
-      calendarId: GOOGLE_CALENDAR_ID,
+      calendarId: CALENDAR_ID,
       eventId: event_id
     });
 
     const event = original.data;
 
     if (nome) event.summary = `Consulta Clínica SaúdeSim - ${nome}`;
+    if (email) event.attendees = [{ email }];
     if (local) event.location = local;
 
     if (data && hora) {
       const startISO = toISODateTime(data, hora);
       const endISO = addOneHourISO(startISO);
-
-      event.start = { dateTime: startISO, timeZone: TIMEZONE };
-      event.end = { dateTime: endISO, timeZone: TIMEZONE };
+      event.start = { dateTime: startISO, timeZone: TIMEZONE || "America/Sao_Paulo" };
+      event.end = { dateTime: endISO, timeZone: TIMEZONE || "America/Sao_Paulo" };
     }
 
     const response = await calendar.events.update({
-      calendarId: GOOGLE_CALENDAR_ID,
+      calendarId: CALENDAR_ID,
       eventId: event_id,
       resource: event
     });
 
-    return res.json({ status: "updated", event: response.data });
+    res.json({ status: "updated", event: response.data });
 
   } catch (err) {
-    console.error("ERRO AO ATUALIZAR EVENTO:", err);
-    return res.status(500).json({ error: "internal_error", details: err.message });
+    console.error("Erro ao atualizar:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // -----------------------------------------------------------
-//  DELETAR EVENTO
+//  ROTA: REMOVER EVENTO
 // -----------------------------------------------------------
 
 app.post("/delete-event", validateToken, async (req, res) => {
   try {
     const { event_id } = req.body;
 
-    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
+    if (!event_id) {
+      return res.status(400).json({ error: "event_id obrigatório" });
+    }
 
     const auth = getJwtClient();
     await auth.authorize();
     const calendar = google.calendar({ version: "v3", auth });
 
     await calendar.events.delete({
-      calendarId: GOOGLE_CALENDAR_ID,
+      calendarId: CALENDAR_ID,
       eventId: event_id
     });
 
-    return res.json({ status: "deleted", event_id });
+    res.json({ status: "deleted", event_id });
 
   } catch (err) {
-    console.error("ERRO AO DELETAR EVENTO:", err);
-    return res.status(500).json({ error: "internal_error", details: err.message });
+    console.error("Erro ao deletar:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // -----------------------------------------------------------
-//  INICIAR SERVIDOR
+//  SERVER ONLINE
 // -----------------------------------------------------------
 
 const PORT = process.env.PORT || 3000;
