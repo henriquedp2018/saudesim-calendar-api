@@ -1,9 +1,9 @@
 // -----------------------------------------------------------
-//  API COMPLETA GOOGLE CALENDAR
-//  Agendamentos para Clínica SaúdeSim
-//  Com Service Account via Secret File
-//  Sem Google Meet (conferenceData removido)
-//  Com bloqueio de horários duplicados
+//  API COMPLETA GOOGLE CALENDAR — Clínica SaúdeSim
+//  • Service Account via arquivo
+//  • Sem Google Meet
+//  • Bloqueio de horários duplicados
+//  • Rota /ping para manter servidor ativo
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -14,11 +14,19 @@ const app = express();
 app.use(express.json());
 
 // -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS — somente rotas oficiais
+//  ROTA /ping — manter servidor vivo
+// -----------------------------------------------------------
+
+app.get("/ping", (req, res) => {
+  return res.status(200).json({ status: "alive" });
+});
+
+// -----------------------------------------------------------
+//  BLOQUEIO DE ROTAS — permitir somente rotas oficiais
 // -----------------------------------------------------------
 
 app.use((req, res, next) => {
-  const allowed = ["/create-event", "/update-event", "/delete-event"];
+  const allowed = ["/create-event", "/update-event", "/delete-event", "/ping"];
   if (!allowed.includes(req.path)) return res.status(200).send("OK");
   next();
 });
@@ -33,7 +41,7 @@ let serviceAccount = null;
 try {
   serviceAccount = require(SERVICE_ACCOUNT_PATH);
 } catch (error) {
-  console.error("❌ ERRO ao carregar service-account.json:", error);
+  console.error("❌ ERRO ao carregar arquivo service-account.json:", error);
   process.exit(1);
 }
 
@@ -41,7 +49,7 @@ const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
 const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
 
 // -----------------------------------------------------------
-//  CALENDAR ID FIXO
+//  CONFIGURAÇÕES DO SISTEMA
 // -----------------------------------------------------------
 
 const GOOGLE_CALENDAR_ID =
@@ -51,7 +59,7 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const TIMEZONE = "America/Sao_Paulo";
 
 // -----------------------------------------------------------
-//  AUTENTICAÇÃO
+//  AUTENTICAÇÃO GOOGLE CALENDAR
 // -----------------------------------------------------------
 
 function getJwtClient() {
@@ -64,7 +72,7 @@ function getJwtClient() {
 }
 
 // -----------------------------------------------------------
-//  FORMATADORES DE DATA
+//  FORMATAR DATAS
 // -----------------------------------------------------------
 
 function toISODateTime(dateStr, timeStr) {
@@ -79,19 +87,21 @@ function addOneHourISO(startISO) {
 }
 
 // -----------------------------------------------------------
-//  TOKEN DE SEGURANÇA BOTCONVERSA
+//  VALIDAR TOKEN BOTCONVERSA
 // -----------------------------------------------------------
 
 function validateToken(req, res, next) {
   const token = req.get("X-Webhook-Token");
+
   if (!token || token !== WEBHOOK_SECRET) {
     return res.status(403).json({ error: "Unauthorized - invalid token" });
   }
+
   next();
 }
 
 // -----------------------------------------------------------
-//  VERIFICAR SE JÁ EXISTE EVENTO NO HORÁRIO
+//  VERIFICAR HORÁRIO — NÃO PERMITIR DUPLICIDADE
 // -----------------------------------------------------------
 
 async function checkTimeSlot(calendar, startISO, endISO) {
@@ -107,13 +117,15 @@ async function checkTimeSlot(calendar, startISO, endISO) {
 }
 
 // -----------------------------------------------------------
-//  ROTA — CRIAR EVENTO
+//  ROTA: CRIAR EVENTO
 // -----------------------------------------------------------
 
 app.post("/create-event", validateToken, async (req, res) => {
   try {
-    const { nome, email, fone, tipo_atd, data, hora, pagto, libras, res_id, valor, local } =
-      req.body;
+    const {
+      nome, email, fone, tipo_atd, data, hora,
+      pagto, libras, res_id, valor, local
+    } = req.body;
 
     if (!nome || !email || !data || !hora) {
       return res.status(400).json({ error: "Campos obrigatórios ausentes!" });
@@ -121,17 +133,19 @@ app.post("/create-event", validateToken, async (req, res) => {
 
     const auth = getJwtClient();
     await auth.authorize();
+
     const calendar = google.calendar({ version: "v3", auth });
 
     const startISO = toISODateTime(data, hora);
     const endISO = addOneHourISO(startISO);
 
-    // ❗ Impedir horário duplicado
+    // Impedir agendamento duplicado
     const slotBusy = await checkTimeSlot(calendar, startISO, endISO);
+
     if (slotBusy) {
       return res.status(409).json({
         error: "conflict",
-        details: "Já existe um atendimento nesse horário.",
+        details: "Já existe um atendimento marcado nesse horário."
       });
     }
 
@@ -142,18 +156,19 @@ app.post("/create-event", validateToken, async (req, res) => {
         `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}` +
         `\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
       start: { dateTime: startISO, timeZone: TIMEZONE },
-      end: { dateTime: endISO, timeZone: TIMEZONE },
+      end: { dateTime: endISO, timeZone: TIMEZONE }
     };
 
     const response = await calendar.events.insert({
       calendarId: GOOGLE_CALENDAR_ID,
-      resource: event,
+      resource: event
     });
 
     return res.json({
       status: "created",
-      event_id: response.data.id,
+      event_id: response.data.id
     });
+
   } catch (err) {
     console.error("❌ ERRO AO CRIAR EVENTO:", err);
     return res.status(500).json({ error: "internal_error", details: err.message });
@@ -161,23 +176,24 @@ app.post("/create-event", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA — ATUALIZAR EVENTO
+//  ROTA: ATUALIZAR EVENTO
 // -----------------------------------------------------------
 
 app.post("/update-event", validateToken, async (req, res) => {
   try {
-    const { event_id, nome, email, data, hora, tipo_atd, pagto, libras, valor, local } =
-      req.body;
+    const { event_id, nome, email, data, hora, tipo_atd, pagto, libras, valor, local } = req.body;
 
-    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
+    if (!event_id)
+      return res.status(400).json({ error: "event_id obrigatório" });
 
     const auth = getJwtClient();
     await auth.authorize();
 
     const calendar = google.calendar({ version: "v3", auth });
+
     const original = await calendar.events.get({
       calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id,
+      eventId: event_id
     });
 
     const event = original.data;
@@ -196,10 +212,11 @@ app.post("/update-event", validateToken, async (req, res) => {
     const response = await calendar.events.update({
       calendarId: GOOGLE_CALENDAR_ID,
       eventId: event_id,
-      resource: event,
+      resource: event
     });
 
     return res.json({ status: "updated", event: response.data });
+
   } catch (err) {
     console.error("❌ ERRO AO ATUALIZAR EVENTO:", err);
     return res.status(500).json({ error: "internal_error", details: err.message });
@@ -207,13 +224,15 @@ app.post("/update-event", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA — EXCLUIR EVENTO
+//  ROTA: DELETAR EVENTO
 // -----------------------------------------------------------
 
 app.post("/delete-event", validateToken, async (req, res) => {
   try {
     const { event_id } = req.body;
-    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
+
+    if (!event_id)
+      return res.status(400).json({ error: "event_id obrigatório" });
 
     const auth = getJwtClient();
     await auth.authorize();
@@ -222,10 +241,11 @@ app.post("/delete-event", validateToken, async (req, res) => {
 
     await calendar.events.delete({
       calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id,
+      eventId: event_id
     });
 
     return res.json({ status: "deleted", event_id });
+
   } catch (err) {
     console.error("❌ ERRO AO DELETAR EVENTO:", err);
     return res.status(500).json({ error: "internal_error", details: err.message });
