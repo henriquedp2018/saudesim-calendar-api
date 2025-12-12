@@ -1,169 +1,243 @@
-// ==============================================
-// API SAÚDESIM - GOOGLE CALENDAR INTEGRATION
-// CORRIGIDA COM: 
-// - Google Meet funcionando
-// - Bloqueio de horário duplicado
-// - Conversões de data e hora
-// ==============================================
+// -----------------------------------------------------------
+//  API COMPLETA GOOGLE CALENDAR
+//  Agendamentos para Clínica SaúdeSim
+//  Com Service Account via Secret File
+//  Sem Google Meet (conferenceData removido)
+//  Com bloqueio de horários duplicados
+// -----------------------------------------------------------
 
-import express from "express";
-import bodyParser from "body-parser";
-import { google } from "googleapis";
-import fs from "fs";
-
+require("dotenv").config();
+const express = require("express");
+const { google } = require("googleapis");
 const app = express();
-app.use(bodyParser.json());
 
-// ===========================
-// 1) CARREGA SERVICE ACCOUNT
-// ===========================
-const serviceAccount = JSON.parse(
-  fs.readFileSync("/etc/secrets/service-account.json", "utf8")
-);
+app.use(express.json());
 
-const SCOPES = [
-  "https://www.googleapis.com/auth/calendar",
-  "https://www.googleapis.com/auth/calendar.events",
-  "https://www.googleapis.com/auth/calendar.events.readonly"
-];
+// -----------------------------------------------------------
+//  BLOQUEIO DE ROTAS — permita somente as oficiais
+// -----------------------------------------------------------
 
-const auth = new google.auth.JWT(
-  serviceAccount.client_email,
-  null,
-  serviceAccount.private_key,
-  SCOPES
-);
+app.use((req, res, next) => {
+  const allowed = ["/create-event", "/update-event", "/delete-event"];
+  if (!allowed.includes(req.path)) return res.status(200).send("OK");
+  next();
+});
 
-const calendar = google.calendar({ version: "v3", auth });
+// -----------------------------------------------------------
+//  SERVICE ACCOUNT VIA SECRET FILE
+// -----------------------------------------------------------
 
-// ===========================
-// 2) FUNÇÃO PARA BLOQUEAR DUPLICIDADE
-// ===========================
-async function horarioOcupado(calendarId, startISO, endISO) {
-  const resp = await calendar.events.list({
-    calendarId,
+const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
+
+let serviceAccount = null;
+try {
+  serviceAccount = require(SERVICE_ACCOUNT_PATH);
+} catch (error) {
+  console.error("❌ ERRO ao carregar service-account.json:", error);
+  process.exit(1);
+}
+
+const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
+const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
+
+// -----------------------------------------------------------
+//  DEFINIÇÃO FIXA DO CALENDAR ID
+// -----------------------------------------------------------
+
+const GOOGLE_CALENDAR_ID =
+  "2d896e5ad2fcc150e10efe24cce9156ab577442a74b70d9fcd89f7d166c8479c@group.calendar.google.com";
+
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+const TIMEZONE = "America/Sao_Paulo";
+
+// -----------------------------------------------------------
+//  AUTENTICAÇÃO JWT
+// -----------------------------------------------------------
+
+function getJwtClient() {
+  return new google.auth.JWT(
+    GOOGLE_CLIENT_EMAIL,
+    null,
+    GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    ["https://www.googleapis.com/auth/calendar"]
+  );
+}
+
+// -----------------------------------------------------------
+//  FUNÇÕES DE DATA
+// -----------------------------------------------------------
+
+function toISODateTime(dateStr, timeStr) {
+  const [d, m, y] = dateStr.split("/");
+  return `${y}-${m}-${d}T${timeStr}:00-03:00`;
+}
+
+function addOneHourISO(startISO) {
+  const date = new Date(startISO);
+  date.setHours(date.getHours() + 1);
+  return date.toISOString();
+}
+
+// -----------------------------------------------------------
+// VALIDAÇÃO DO TOKEN DO BOTCONVERSA
+// -----------------------------------------------------------
+
+function validateToken(req, res, next) {
+  const token = req.get("X-Webhook-Token");
+  if (!token || token !== WEBHOOK_SECRET) {
+    return res.status(403).json({ error: "Unauthorized - invalid token" });
+  }
+  next();
+}
+
+// -----------------------------------------------------------
+// FUNÇÃO — VERIFICAR SE JÁ EXISTE EVENTO NO HORÁRIO
+// -----------------------------------------------------------
+
+async function checkTimeSlot(calendar, startISO, endISO) {
+  const response = await calendar.events.list({
+    calendarId: GOOGLE_CALENDAR_ID,
     timeMin: startISO,
     timeMax: endISO,
     singleEvents: true,
-    orderBy: "startTime"
+    orderBy: "startTime",
   });
 
-  return resp.data.items.length > 0;
+  return response.data.items.length > 0;
 }
 
-// ===========================
-// 3) ROTA PRINCIPAL
-// ===========================
-app.post("/create-event", async (req, res) => {
+// -----------------------------------------------------------
+// ROTA — CRIAR EVENTO
+// -----------------------------------------------------------
+
+app.post("/create-event", validateToken, async (req, res) => {
   try {
-    const {
-      nome,
-      email,
-      fone,
-      tipo_atd,
-      data,
-      hora,
-      pagto,
-      libras,
-      local,
-      valor,
-      res_id
-    } = req.body;
+    const { nome, email, fone, tipo_atd, data, hora, pagto, libras, res_id, valor, local } =
+      req.body;
 
-    // ===========================
-    // VALIDAÇÃO SIMPLES
-    // ===========================
     if (!nome || !email || !data || !hora) {
-      return res.status(400).json({
-        error: "Campos obrigatórios ausentes!"
-      });
+      return res.status(400).json({ error: "Campos obrigatórios ausentes!" });
     }
 
-    // ===========================
-    // FORMATAR DATAS
-    // ===========================
-    const [dia, mes, ano] = data.split("/");
-    const startISO = `${ano}-${mes}-${dia}T${hora}:00-03:00`;
+    const auth = getJwtClient();
+    await auth.authorize();
 
-    // término fixo = +1 hora
-    const endISO = `${ano}-${mes}-${dia}T${
-      String(Number(hora.split(":")[0]) + 1).padStart(2, "0")
-    }:${hora.split(":")[1]}:00-03:00`;
+    const calendar = google.calendar({ version: "v3", auth });
 
-    // ===========================
-    //  BLOQUEIO DE HORÁRIO
-    // ===========================
-    const calendarId = process.env.CALENDAR_ID;
+    const startISO = toISODateTime(data, hora);
+    const endISO = addOneHourISO(startISO);
 
-    const ocupado = await horarioOcupado(calendarId, startISO, endISO);
-    if (ocupado) {
+    // ❗ Impedir agendamentos duplicados
+    const slotBusy = await checkTimeSlot(calendar, startISO, endISO);
+    if (slotBusy) {
       return res.status(409).json({
-        error: "Horário indisponível!"
+        error: "conflict",
+        details: "Já existe um atendimento marcado nesse horário.",
       });
     }
 
-    // ===========================
-    // 4) CRIAR EVENTO COM MEET
-    // ===========================
-    const eventBody = {
+    const event = {
       summary: `Consulta Clínica SaúdeSim - ${nome}`,
-      location: local,
+      location: local || "",
       description:
-        `Paciente: ${nome}\n` +
-        `Telefone: ${fone}\n` +
-        `Atendimento: ${tipo_atd}\n` +
-        `Pagamento: ${pagto}\n` +
-        `Libras: ${libras}\n` +
-        `Valor: ${valor}\n` +
-        `ID Reserva: ${res_id}`,
-
-      start: {
-        dateTime: startISO,
-        timeZone: "America/Sao_Paulo"
-      },
-      end: {
-        dateTime: endISO,
-        timeZone: "America/Sao_Paulo"
-      },
-
-      // GOOGLE MEET
-      conferenceData: {
-        createRequest: {
-          requestId: `meet-${Date.now()}`,
-          conferenceSolutionKey: {
-            type: "hangoutsMeet"
-          }
-        }
-      }
+        `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}` +
+        `\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
+      start: { dateTime: startISO, timeZone: TIMEZONE },
+      end: { dateTime: endISO, timeZone: TIMEZONE },
     };
 
+    // Sem Meet (conferenceData removido)
+
     const response = await calendar.events.insert({
-      calendarId,
-      resource: eventBody,
-      conferenceDataVersion: 1
+      calendarId: GOOGLE_CALENDAR_ID,
+      resource: event,
     });
-
-    const meetLink = response.data?.conferenceData?.entryPoints?.[0]?.uri || null;
-
-    console.log("MEET GERADO:", meetLink);
 
     return res.json({
-      status: "success",
-      message: "Evento criado com sucesso!",
-      meet_link: meetLink
+      status: "created",
+      event_id: response.data.id,
     });
-
   } catch (err) {
     console.error("❌ ERRO AO CRIAR EVENTO:", err);
-    return res.status(500).json({
-      error: "internal_error",
-      details: err.message
-    });
+    return res.status(500).json({ error: "internal_error", details: err.message });
   }
 });
 
-// ===========================
-// 5) START SERVER
-// ===========================
+// -----------------------------------------------------------
+// ROTA — ATUALIZAR EVENTO
+// -----------------------------------------------------------
+
+app.post("/update-event", validateToken, async (req, res) => {
+  try {
+    const { event_id, nome, email, data, hora, tipo_atd, pagto, libras, valor, local } =
+      req.body;
+
+    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
+
+    const auth = getJwtClient();
+    await auth.authorize();
+
+    const calendar = google.calendar({ version: "v3", auth });
+    const original = await calendar.events.get({
+      calendarId: GOOGLE_CALENDAR_ID,
+      eventId: event_id,
+    });
+
+    const event = original.data;
+
+    if (nome) event.summary = `Consulta Clínica SaúdeSim - ${nome}`;
+    if (local) event.location = local;
+
+    if (data && hora) {
+      const startISO = toISODateTime(data, hora);
+      const endISO = addOneHourISO(startISO);
+
+      event.start = { dateTime: startISO, timeZone: TIMEZONE };
+      event.end = { dateTime: endISO, timeZone: TIMEZONE };
+    }
+
+    const response = await calendar.events.update({
+      calendarId: GOOGLE_CALENDAR_ID,
+      eventId: event_id,
+      resource: event,
+    });
+
+    return res.json({ status: "updated", event: response.data });
+  } catch (err) {
+    console.error("❌ ERRO AO ATUALIZAR EVENTO:", err);
+    return res.status(500).json({ error: "internal_error", details: err.message });
+  }
+});
+
+// -----------------------------------------------------------
+// ROTA — DELETAR EVENTO
+// -----------------------------------------------------------
+
+app.post("/delete-event", validateToken, async (req, res) => {
+  try {
+    const { event_id } = req.body;
+    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
+
+    const auth = getJwtClient();
+    await auth.authorize();
+
+    const calendar = google.calendar({ version: "v3", auth });
+
+    await calendar.events.delete({
+      calendarId: GOOGLE_CALENDAR_ID,
+      eventId: event_id,
+    });
+
+    return res.json({ status: "deleted", event_id });
+  } catch (err) {
+    console.error("❌ ERRO AO DELETAR EVENTO:", err);
+    return res.status(500).json({ error: "internal_error", details: err.message });
+  }
+});
+
+// -----------------------------------------------------------
+// INICIAR SERVIDOR
+// -----------------------------------------------------------
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log("🚀 API Rodando na porta " + PORT));
