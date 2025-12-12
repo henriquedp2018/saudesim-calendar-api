@@ -1,12 +1,3 @@
-// -----------------------------------------------------------
-//  API GOOGLE CALENDAR - CLÍNICA SAÚDESIM
-//  ✔ Sem convidados
-//  ✔ Retorna link do evento
-//  ✔ Gera Google Meet quando tipo_atd = "Online"
-//  ✔ Service Account via Secret File
-//  ✔ Validação de Token do BotConversa
-// -----------------------------------------------------------
-
 require("dotenv").config();
 const express = require("express");
 const { google } = require("googleapis");
@@ -15,9 +6,8 @@ const app = express();
 app.use(express.json());
 
 // -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS PERMITIDAS
+//  BLOQUEIO DE ROTAS – permite apenas as rotas da API
 // -----------------------------------------------------------
-
 app.use((req, res, next) => {
   const allowed = ["/create-event", "/update-event", "/delete-event"];
 
@@ -29,21 +19,21 @@ app.use((req, res, next) => {
 });
 
 // -----------------------------------------------------------
-//  SERVICE ACCOUNT
+//  SERVICE ACCOUNT - carregado via secret file
 // -----------------------------------------------------------
-
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
 
 if (!SERVICE_ACCOUNT_PATH) {
-  console.error("❌ ERRO: GOOGLE_SA_KEY_FILE não definido!");
+  console.error("❌ ERRO: GOOGLE_SA_KEY_FILE não definido no .env!");
   process.exit(1);
 }
 
 let serviceAccount = null;
+
 try {
   serviceAccount = require(SERVICE_ACCOUNT_PATH);
 } catch (error) {
-  console.error("❌ ERRO ao carregar service-account.json:", error);
+  console.error("❌ ERRO ao carregar o service account:", error);
   process.exit(1);
 }
 
@@ -51,24 +41,18 @@ const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
 const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
 
 // -----------------------------------------------------------
-//  VARIÁVEIS DO .env
+//  VARIÁVEIS DO ENV
 // -----------------------------------------------------------
-
-const {
-  WEBHOOK_SECRET,
-  GOOGLE_CALENDAR_ID,
-  TIMEZONE
-} = process.env;
+const { WEBHOOK_SECRET, GOOGLE_CALENDAR_ID, TIMEZONE } = process.env;
 
 if (!WEBHOOK_SECRET || !GOOGLE_CALENDAR_ID || !GOOGLE_CLIENT_EMAIL || !GOOGLE_PRIVATE_KEY) {
-  console.error("❌ ERRO: Variáveis do .env faltando!");
+  console.error("❌ ERRO: Variáveis obrigatórias ausentes!");
   process.exit(1);
 }
 
 // -----------------------------------------------------------
 //  GOOGLE AUTH
 // -----------------------------------------------------------
-
 function getJwtClient() {
   return new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
@@ -82,43 +66,40 @@ function getJwtClient() {
 }
 
 // -----------------------------------------------------------
-//  FORMATAR DATA (DD/MM/AAAA → ISO)
+//  FUNÇÕES DE DATA/HORA
 // -----------------------------------------------------------
-
-function convertToISO(dateStr, timeStr) {
-  const [dia, mes, ano] = dateStr.split("/");
-  return `${ano}-${mes}-${dia}T${timeStr}:00-03:00`;
+function toISODateTime(dateStr, timeStr) {
+  // dateStr: DD/MM/AAAA
+  // timeStr: HH:MM
+  const [d, m, y] = dateStr.split("/");
+  return `${y}-${m}-${d}T${timeStr}:00-03:00`;
 }
 
-function addOneHour(isoDateTime) {
-  const dt = new Date(isoDateTime);
-  dt.setHours(dt.getHours() + 1);
-  return dt.toISOString();
+function addOneHourISO(startISO) {
+  const date = new Date(startISO);
+  date.setHours(date.getHours() + 1);
+  return date.toISOString();
 }
 
 // -----------------------------------------------------------
-//  VALIDAR TOKEN DO BOTCONVERSA
+//  MIDDLEWARE DE AUTENTICAÇÃO
 // -----------------------------------------------------------
-
 function validateToken(req, res, next) {
   const token = req.get("X-Webhook-Token");
-
   if (!token || token !== WEBHOOK_SECRET) {
     return res.status(403).json({ error: "Unauthorized - invalid token" });
   }
-
   next();
 }
 
 // -----------------------------------------------------------
-//  CRIAR EVENTO
+//  ROTA — CRIAR EVENTO
 // -----------------------------------------------------------
-
 app.post("/create-event", validateToken, async (req, res) => {
   try {
     const {
-      nome, email, fone, tipo_atd, data, hora,
-      pagto, libras, res_id, valor, local
+      nome, fone, email, tipo_atd, data, hora,
+      pagto, libras, valor, local, res_id
     } = req.body;
 
     if (!nome || !email || !data || !hora) {
@@ -129,25 +110,30 @@ app.post("/create-event", validateToken, async (req, res) => {
     await auth.authorize();
     const calendar = google.calendar({ version: "v3", auth });
 
-    const startISO = convertToISO(data, hora);
-    const endISO = addOneHour(startISO);
+    const startISO = toISODateTime(data, hora);
+    const endISO = addOneHourISO(startISO);
 
     const event = {
       summary: `Consulta Clínica SaúdeSim - ${nome}`,
       location: local || "",
       description:
-        `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
+        `Paciente: ${nome}\n` +
+        `Telefone: ${fone}\n` +
+        `Atendimento: ${tipo_atd}\n` +
+        `Pagamento: ${pagto}\n` +
+        `Libras: ${libras}\n` +
+        `Valor: ${valor}\n` +
+        `ID Reserva: ${res_id}`,
       start: { dateTime: startISO, timeZone: TIMEZONE },
       end: { dateTime: endISO, timeZone: TIMEZONE }
     };
 
-    // ----------------------------------------------
-    //  SE FOR ONLINE → Gera Google Meet automaticamente
-    // ----------------------------------------------
-    if (tipo_atd && tipo_atd.toLowerCase() === "online") {
+    // Se atendimento for online → gerar Google Meet
+    if (tipo_atd === "online") {
       event.conferenceData = {
         createRequest: {
-          requestId: "meet-" + Date.now()
+          requestId: `meet-${Date.now()}`,
+          conferenceSolutionKey: { type: "hangoutsMeet" }
         }
       };
     }
@@ -158,33 +144,29 @@ app.post("/create-event", validateToken, async (req, res) => {
       conferenceDataVersion: 1
     });
 
+    const meetLink =
+      response.data.conferenceData?.entryPoints?.[0]?.uri || null;
+
     return res.json({
       status: "created",
       event_id: response.data.id,
-      event_link: response.data.htmlLink,
-      meet_link: response.data.hangoutLink || null
+      meet_link: meetLink
     });
 
   } catch (err) {
-    console.error("ERRO AO CRIAR EVENTO:", err);
+    console.error("❌ ERRO AO CRIAR EVENTO:", err);
     return res.status(500).json({ error: "internal_error", details: err.message });
   }
 });
 
 // -----------------------------------------------------------
-//  ATUALIZAR EVENTO
+//  ROTA — ATUALIZAR EVENTO
 // -----------------------------------------------------------
-
 app.post("/update-event", validateToken, async (req, res) => {
   try {
-    const {
-      event_id, nome, email, data, hora,
-      tipo_atd, pagto, libras, valor, local
-    } = req.body;
+    const { event_id, nome, email, data, hora, tipo_atd, pagto, libras, valor, local } = req.body;
 
-    if (!event_id) {
-      return res.status(400).json({ error: "event_id obrigatório" });
-    }
+    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
 
     const auth = getJwtClient();
     await auth.authorize();
@@ -200,54 +182,37 @@ app.post("/update-event", validateToken, async (req, res) => {
     if (nome) event.summary = `Consulta Clínica SaúdeSim - ${nome}`;
     if (local) event.location = local;
 
-    // Atualiza data/hora
     if (data && hora) {
-      const startISO = convertToISO(data, hora);
-      const endISO = addOneHour(startISO);
+      const startISO = toISODateTime(data, hora);
+      const endISO = addOneHourISO(startISO);
 
       event.start = { dateTime: startISO, timeZone: TIMEZONE };
       event.end = { dateTime: endISO, timeZone: TIMEZONE };
     }
 
-    // Se mudar para online → cria Meet
-    if (tipo_atd && tipo_atd.toLowerCase() === "online") {
-      event.conferenceData = {
-        createRequest: {
-          requestId: "meet-" + Date.now()
-        }
-      };
-    }
-
-    const response = await calendar.events.update({
+    const updated = await calendar.events.update({
       calendarId: GOOGLE_CALENDAR_ID,
       eventId: event_id,
       resource: event,
       conferenceDataVersion: 1
     });
 
-    return res.json({
-      status: "updated",
-      event_id,
-      meet_link: response.data.hangoutLink || null
-    });
+    return res.json({ status: "updated", event: updated.data });
 
   } catch (err) {
-    console.error("ERRO AO ATUALIZAR EVENTO:", err);
+    console.error("❌ ERRO AO ATUALIZAR EVENTO:", err);
     return res.status(500).json({ error: "internal_error", details: err.message });
   }
 });
 
 // -----------------------------------------------------------
-//  DELETAR EVENTO
+//  ROTA — DELETAR EVENTO
 // -----------------------------------------------------------
-
 app.post("/delete-event", validateToken, async (req, res) => {
   try {
     const { event_id } = req.body;
 
-    if (!event_id) {
-      return res.status(400).json({ error: "event_id obrigatório" });
-    }
+    if (!event_id) return res.status(400).json({ error: "event_id obrigatório" });
 
     const auth = getJwtClient();
     await auth.authorize();
@@ -258,17 +223,19 @@ app.post("/delete-event", validateToken, async (req, res) => {
       eventId: event_id
     });
 
-    return res.json({ status: "deleted", event_id });
+    res.json({ status: "deleted", event_id });
 
   } catch (err) {
-    console.error("ERRO AO DELETAR EVENTO:", err);
-    return res.status(500).json({ error: "internal_error", details: err.message });
+    console.error("❌ ERRO AO DELETAR EVENTO:", err);
+    res.status(500).json({ error: "internal_error", details: err.message });
   }
 });
 
 // -----------------------------------------------------------
-//  INICIAR SERVIDOR (Render define porta automaticamente)
+//  INICIAR SERVIDOR
 // -----------------------------------------------------------
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🚀 API Rodando na porta " + PORT));
+
+app.listen(PORT, () => {
+  console.log("🚀 API Rodando na porta " + PORT);
+});
