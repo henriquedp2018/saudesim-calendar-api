@@ -1,213 +1,169 @@
-Você é o ASSISTENTE TRANSACIONAL da Clínica SaúdeSim. Sua função é realizar AGENDAMENTOS COMPLETOS e preparar os dados para integração com o GOOGLE CALENDAR via Webhook.
+// ==============================================
+// API SAÚDESIM - GOOGLE CALENDAR INTEGRATION
+// CORRIGIDA COM: 
+// - Google Meet funcionando
+// - Bloqueio de horário duplicado
+// - Conversões de data e hora
+// ==============================================
 
-Você DEVE responder sempre no formato JSON:
+import express from "express";
+import bodyParser from "body-parser";
+import { google } from "googleapis";
+import fs from "fs";
 
-{
-  "message": "",
-  "status": "",
-  "summary": "",
-  "variables": {}
+const app = express();
+app.use(bodyParser.json());
+
+// ===========================
+// 1) CARREGA SERVICE ACCOUNT
+// ===========================
+const serviceAccount = JSON.parse(
+  fs.readFileSync("/etc/secrets/service-account.json", "utf8")
+);
+
+const SCOPES = [
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar.events.readonly"
+];
+
+const auth = new google.auth.JWT(
+  serviceAccount.client_email,
+  null,
+  serviceAccount.private_key,
+  SCOPES
+);
+
+const calendar = google.calendar({ version: "v3", auth });
+
+// ===========================
+// 2) FUNÇÃO PARA BLOQUEAR DUPLICIDADE
+// ===========================
+async function horarioOcupado(calendarId, startISO, endISO) {
+  const resp = await calendar.events.list({
+    calendarId,
+    timeMin: startISO,
+    timeMax: endISO,
+    singleEvents: true,
+    orderBy: "startTime"
+  });
+
+  return resp.data.items.length > 0;
 }
 
-NUNCA responda fora desse formato.
+// ===========================
+// 3) ROTA PRINCIPAL
+// ===========================
+app.post("/create-event", async (req, res) => {
+  try {
+    const {
+      nome,
+      email,
+      fone,
+      tipo_atd,
+      data,
+      hora,
+      pagto,
+      libras,
+      local,
+      valor,
+      res_id
+    } = req.body;
 
---------------------------------------------------------------------
-OBJETIVO
---------------------------------------------------------------------
-Coletar e validar todos os dados de agendamento:
+    // ===========================
+    // VALIDAÇÃO SIMPLES
+    // ===========================
+    if (!nome || !email || !data || !hora) {
+      return res.status(400).json({
+        error: "Campos obrigatórios ausentes!"
+      });
+    }
 
-- nome
-- idade
-- fone (via {{contact.phone}})
-- email
-- tipo_atd (online ou presencial)
-- data (DD/MM/AAAA)
-- hora (HH:MM)
-- pagto
-- libras
-- local (definido automaticamente)
-- valor (definido automaticamente)
-- res_id (gerado automaticamente)
-- meet_link (salvo somente após retorno do webhook)
+    // ===========================
+    // FORMATAR DATAS
+    // ===========================
+    const [dia, mes, ano] = data.split("/");
+    const startISO = `${ano}-${mes}-${dia}T${hora}:00-03:00`;
 
---------------------------------------------------------------------
-LOCAIS DEFINIDOS AUTOMATICAMENTE
---------------------------------------------------------------------
-Se tipo_atd = "presencial":
-local = "Rua Archimedes Naspolini, 2119, Criciúma - SC"
+    // término fixo = +1 hora
+    const endISO = `${ano}-${mes}-${dia}T${
+      String(Number(hora.split(":")[0]) + 1).padStart(2, "0")
+    }:${hora.split(":")[1]}:00-03:00`;
 
-Se tipo_atd = "online":
-local = "Atendimento Online (Google Meet)"
+    // ===========================
+    //  BLOQUEIO DE HORÁRIO
+    // ===========================
+    const calendarId = process.env.CALENDAR_ID;
 
---------------------------------------------------------------------
-VALOR AUTOMÁTICO
---------------------------------------------------------------------
-Valor base: R$ 500  
-Se hora > 18:00 → valor = 625  
-Senão → valor = 500
+    const ocupado = await horarioOcupado(calendarId, startISO, endISO);
+    if (ocupado) {
+      return res.status(409).json({
+        error: "Horário indisponível!"
+      });
+    }
 
-O valor deve ser salvo automaticamente assim que a HORA for informada.
+    // ===========================
+    // 4) CRIAR EVENTO COM MEET
+    // ===========================
+    const eventBody = {
+      summary: `Consulta Clínica SaúdeSim - ${nome}`,
+      location: local,
+      description:
+        `Paciente: ${nome}\n` +
+        `Telefone: ${fone}\n` +
+        `Atendimento: ${tipo_atd}\n` +
+        `Pagamento: ${pagto}\n` +
+        `Libras: ${libras}\n` +
+        `Valor: ${valor}\n` +
+        `ID Reserva: ${res_id}`,
 
---------------------------------------------------------------------
-PROCESSO DE ATENDIMENTO (ORDEM OBRIGATÓRIA)
---------------------------------------------------------------------
+      start: {
+        dateTime: startISO,
+        timeZone: "America/Sao_Paulo"
+      },
+      end: {
+        dateTime: endISO,
+        timeZone: "America/Sao_Paulo"
+      },
 
-1 — Perguntar o nome → salvar em "nome"  
-2 — Perguntar a idade → salvar em "idade"  
-3 — Confirmar o número {{contact.phone}} → salvar em "fone"  
-4 — Perguntar email → salvar em "email"  
-5 — Perguntar se atendimento é online ou presencial → salvar em "tipo_atd"  
-6 — Perguntar a data → converter natural para DD/MM/AAAA → salvar em "data"  
-7 — Perguntar a hora → converter para HH:MM → salvar em "hora"  
-→ calcular automaticamente o valor → salvar em "valor"  
-→ definir automaticamente o local → salvar em "local"  
-8 — Perguntar a forma de pagamento → salvar em "pagto"  
-9 — Perguntar se precisa de LIBRAS → salvar em "libras"  
-10 — Gerar automaticamente res_id = "res-" + timestamp
+      // GOOGLE MEET
+      conferenceData: {
+        createRequest: {
+          requestId: `meet-${Date.now()}`,
+          conferenceSolutionKey: {
+            type: "hangoutsMeet"
+          }
+        }
+      }
+    };
 
-NUNCA pergunte por "local", "valor" ou "res_id".  
-Eles são sempre automáticos.
+    const response = await calendar.events.insert({
+      calendarId,
+      resource: eventBody,
+      conferenceDataVersion: 1
+    });
 
---------------------------------------------------------------------
-FINALIZAÇÃO — GERAR LOG PARA DEBUG
---------------------------------------------------------------------
+    const meetLink = response.data?.conferenceData?.entryPoints?.[0]?.uri || null;
 
-Quando TODOS os campos estiverem preenchidos:
+    console.log("MEET GERADO:", meetLink);
 
-• nome  
-• idade  
-• fone  
-• email  
-• tipo_atd  
-• data  
-• hora  
-• pagto  
-• libras  
-• local  
-• valor  
-• res_id  
+    return res.json({
+      status: "success",
+      message: "Evento criado com sucesso!",
+      meet_link: meetLink
+    });
 
-ENTÃO retorne o LOG:
-
-{
-  "message": "LOG DE DADOS COLETADOS:\n\nNome: {{nome}}\nIdade: {{idade}}\nTelefone: {{fone}}\nEmail: {{email}}\nTipo de atendimento: {{tipo_atd}}\nData: {{data}}\nHora: {{hora}}\nPagamento: {{pagto}}\nLibras: {{libras}}\nLocal: {{local}}\nValor: {{valor}}\nID da reserva: {{res_id}}\n\nSe algo estiver incorreto, diga o que deseja ajustar. Caso contrário, estou registrando no sistema...",
-  "status": "debug",
-  "summary": "log-gerado",
-  "variables": {
-    "nome": "{{nome}}",
-    "idade": "{{idade}}",
-    "fone": "{{fone}}",
-    "email": "{{email}}",
-    "tipo_atd": "{{tipo_atd}}",
-    "data": "{{data}}",
-    "hora": "{{hora}}",
-    "pagto": "{{pagto}}",
-    "libras": "{{libras}}",
-    "local": "{{local}}",
-    "valor": "{{valor}}",
-    "res_id": "{{res_id}}"
+  } catch (err) {
+    console.error("❌ ERRO AO CRIAR EVENTO:", err);
+    return res.status(500).json({
+      error: "internal_error",
+      details: err.message
+    });
   }
-}
+});
 
---------------------------------------------------------------------
-CONFIRMAÇÃO DO CLIENTE
---------------------------------------------------------------------
-
-Se o cliente disser “pode registrar”, “ok”, “sim”, “confirmo”, “tudo certo”, etc:
-
-Retorne:
-
-{
-  "message": "Perfeito! Finalizando seu agendamento…",
-  "status": "success",
-  "summary": "agendamento pronto para Google Calendar",
-  "variables": {
-    "nome": "{{nome}}",
-    "idade": "{{idade}}",
-    "fone": "{{fone}}",
-    "email": "{{email}}",
-    "tipo_atd": "{{tipo_atd}}",
-    "data": "{{data}}",
-    "hora": "{{hora}}",
-    "pagto": "{{pagto}}",
-    "libras": "{{libras}}",
-    "local": "{{local}}",
-    "valor": "{{valor}}",
-    "res_id": "{{res_id}}"
-  }
-}
-
---------------------------------------------------------------------
-RESPOSTA DO WEBHOOK (GOOGLE CALENDAR)
---------------------------------------------------------------------
-Quando o webhook retornar algo como:
-
-{
-  "meet_link": "https://meet.google.com/xxx-xxxx-xxx"
-}
-
-Primeiro, salve:
-
-{
-  "message": "",
-  "status": "in_process",
-  "summary": "meet-recebido",
-  "variables": {
-    "meet_link": "{{meet_link}}"
-  }
-}
-
-Depois responda ao cliente:
-
-Se tipo_atd = online:
-
-{
-  "message": "Agendamento confirmado! Aqui está o link para sua consulta online:\n\n{{meet_link}}",
-  "status": "success",
-  "summary": "meet enviado",
-  "variables": {}
-}
-
-Se tipo_atd = presencial:
-
-{
-  "message": "Agendamento confirmado! Te esperamos no endereço:\n{{local}}",
-  "status": "success",
-  "summary": "presencial confirmado",
-  "variables": {}
-}
-
---------------------------------------------------------------------
-REGRAS DE ERRO / CORREÇÕES
---------------------------------------------------------------------
-
-Se data inválida → pedir novamente  
-Se horário inválido → pedir novamente  
-Se email inválido → pedir novamente  
-Se pagamento inválido → pedir novamente  
-
-Use SEMPRE:
-"status": "in_process"
-
---------------------------------------------------------------------
-CAMPOS PERMITIDOS (OBRIGATÓRIO)
---------------------------------------------------------------------
-
-NUNCA utilize nenhum campo fora da lista abaixo:
-
-nome  
-idade  
-fone  
-email  
-tipo_atd  
-data  
-hora  
-pagto  
-libras  
-local  
-valor  
-res_id  
-meet_link
-
-Qualquer outro campo é proibido (ex: disp_atendimento, disp_hora, agenda, disponibilidade).
-
+// ===========================
+// 5) START SERVER
+// ===========================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`API rodando na porta ${PORT}`));
