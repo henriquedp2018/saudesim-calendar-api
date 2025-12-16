@@ -15,7 +15,7 @@ const app = express();
 app.use(express.json());
 
 // -----------------------------------------------------------
-//  ROTA /ping — manter servidor vivo
+//  ROTA /ping
 // -----------------------------------------------------------
 
 app.get("/ping", (req, res) => {
@@ -23,7 +23,7 @@ app.get("/ping", (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS — permitir somente rotas oficiais
+//  BLOQUEIO DE ROTAS
 // -----------------------------------------------------------
 
 app.use((req, res, next) => {
@@ -39,16 +39,16 @@ app.use((req, res, next) => {
 });
 
 // -----------------------------------------------------------
-//  SERVICE ACCOUNT VIA SECRET FILE
+//  SERVICE ACCOUNT
 // -----------------------------------------------------------
 
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
 
-let serviceAccount = null;
+let serviceAccount;
 try {
   serviceAccount = require(SERVICE_ACCOUNT_PATH);
-} catch (error) {
-  console.error("❌ ERRO ao carregar service-account.json:", error);
+} catch (err) {
+  console.error("❌ ERRO AO CARREGAR SERVICE ACCOUNT:", err);
   process.exit(1);
 }
 
@@ -56,17 +56,17 @@ const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
 const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
 
 // -----------------------------------------------------------
-//  CONFIGURAÇÕES DO SISTEMA
+//  CONFIGURAÇÕES
 // -----------------------------------------------------------
 
 const GOOGLE_CALENDAR_ID =
   "2d896e5ad2fcc150e10efe24cce9156ab577442a74b70d9fcd89f7d166c8479c@group.calendar.google.com";
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const TIMEZONE = "America/Sao_Paulo";
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 // -----------------------------------------------------------
-//  AUTENTICAÇÃO GOOGLE CALENDAR
+//  AUTENTICAÇÃO GOOGLE
 // -----------------------------------------------------------
 
 function getJwtClient() {
@@ -79,18 +79,27 @@ function getJwtClient() {
 }
 
 // -----------------------------------------------------------
-//  UTILITÁRIOS DE DATA
+//  UTILITÁRIOS DE DATA (DD/MM/AAAA)
 // -----------------------------------------------------------
+
+function validateBRDate(dateStr) {
+  if (!dateStr) return false;
+  const regex = /^\d{2}\/\d{2}\/\d{4}$/;
+  if (!regex.test(dateStr)) return false;
+
+  const [d, m, y] = dateStr.split("/").map(Number);
+  const date = new Date(y, m - 1, d);
+
+  return (
+    date.getFullYear() === y &&
+    date.getMonth() === m - 1 &&
+    date.getDate() === d
+  );
+}
 
 function toISODateTime(dateStr, timeStr) {
   const [d, m, y] = dateStr.split("/");
   return `${y}-${m}-${d}T${timeStr}:00-03:00`;
-}
-
-function addOneHourISO(startISO) {
-  const date = new Date(startISO);
-  date.setHours(date.getHours() + 1);
-  return date.toISOString();
 }
 
 function startOfDayISO(dateStr) {
@@ -103,22 +112,26 @@ function endOfDayISO(dateStr) {
   return `${y}-${m}-${d}T23:59:59-03:00`;
 }
 
+function addOneHourISO(startISO) {
+  const date = new Date(startISO);
+  date.setHours(date.getHours() + 1);
+  return date.toISOString();
+}
+
 // -----------------------------------------------------------
-//  VALIDAR TOKEN BOTCONVERSA
+//  VALIDAÇÃO TOKEN BOTCONVERSA
 // -----------------------------------------------------------
 
 function validateToken(req, res, next) {
   const token = req.get("X-Webhook-Token");
-
   if (!token || token !== WEBHOOK_SECRET) {
-    return res.status(403).json({ error: "Unauthorized - invalid token" });
+    return res.status(403).json({ error: "Unauthorized" });
   }
-
   next();
 }
 
 // -----------------------------------------------------------
-//  VERIFICAR HORÁRIO — NÃO PERMITIR DUPLICIDADE
+//  VERIFICAR DUPLICIDADE
 // -----------------------------------------------------------
 
 async function checkTimeSlot(calendar, startISO, endISO) {
@@ -127,22 +140,24 @@ async function checkTimeSlot(calendar, startISO, endISO) {
     timeMin: startISO,
     timeMax: endISO,
     singleEvents: true,
-    orderBy: "startTime",
+    orderBy: "startTime"
   });
 
   return response.data.items.length > 0;
 }
 
 // -----------------------------------------------------------
-//  ROTA: CONSULTAR HORÁRIOS DISPONÍVEIS (AVAILABILITY)
+//  ROTA: AVAILABILITY
 // -----------------------------------------------------------
 
 app.post("/availability", validateToken, async (req, res) => {
   try {
     const { data } = req.body;
 
-    if (!data) {
-      return res.status(400).json({ error: "Data obrigatória" });
+    if (!validateBRDate(data)) {
+      return res.status(400).json({
+        error: "Data inválida. Use DD/MM/AAAA"
+      });
     }
 
     const auth = getJwtClient();
@@ -150,41 +165,44 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const calendar = google.calendar({ version: "v3", auth });
 
+    const timeMin = startOfDayISO(data);
+    const timeMax = endOfDayISO(data);
+
+    console.log("📅 AVAILABILITY:", data);
+
     const response = await calendar.events.list({
       calendarId: GOOGLE_CALENDAR_ID,
-      timeMin: startOfDayISO(data),
-      timeMax: endOfDayISO(data),
+      timeMin,
+      timeMax,
       singleEvents: true,
-      orderBy: "startTime",
+      orderBy: "startTime"
     });
 
     const events = response.data.items || [];
 
-    // 🔐 Horários ocupados (normalizados para HH:MM em America/Sao_Paulo)
     const occupiedHours = [
       ...new Set(
         events
-          .filter(event => event.start && event.start.dateTime)
-          .map(event => {
-            const start = new Date(event.start.dateTime);
+          .filter(e => e.start?.dateTime)
+          .map(e => {
+            const start = new Date(e.start.dateTime);
             return start.toLocaleTimeString("pt-BR", {
               hour: "2-digit",
               minute: "2-digit",
+              hour12: false,
               timeZone: TIMEZONE
             });
           })
       )
     ];
 
-    // Horários padrão (08:00 até 22:00)
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
     }
 
-    // Remove horários ocupados
     const availableHours = allHours.filter(
-      hour => !occupiedHours.includes(hour)
+      h => !occupiedHours.includes(h)
     );
 
     return res.json({
@@ -199,7 +217,7 @@ app.post("/availability", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: CRIAR EVENTO
+//  ROTA: CREATE EVENT
 // -----------------------------------------------------------
 
 app.post("/create-event", validateToken, async (req, res) => {
@@ -210,7 +228,11 @@ app.post("/create-event", validateToken, async (req, res) => {
     } = req.body;
 
     if (!nome || !email || !data || !hora) {
-      return res.status(400).json({ error: "Campos obrigatórios ausentes!" });
+      return res.status(400).json({ error: "Campos obrigatórios ausentes" });
+    }
+
+    if (!validateBRDate(data)) {
+      return res.status(400).json({ error: "Data inválida" });
     }
 
     const auth = getJwtClient();
@@ -221,12 +243,10 @@ app.post("/create-event", validateToken, async (req, res) => {
     const startISO = toISODateTime(data, hora);
     const endISO = addOneHourISO(startISO);
 
-    const slotBusy = await checkTimeSlot(calendar, startISO, endISO);
-
-    if (slotBusy) {
+    if (await checkTimeSlot(calendar, startISO, endISO)) {
       return res.status(409).json({
         error: "conflict",
-        details: "Já existe um atendimento marcado nesse horário."
+        details: "Horário já ocupado"
       });
     }
 
@@ -245,27 +265,25 @@ app.post("/create-event", validateToken, async (req, res) => {
       resource: event
     });
 
-    return res.json({
-      status: "created",
-      event_id: response.data.id
-    });
+    return res.json({ status: "created", event_id: response.data.id });
 
   } catch (err) {
-    console.error("❌ ERRO AO CRIAR EVENTO:", err);
-    return res.status(500).json({ error: "internal_error", details: err.message });
+    console.error("❌ ERRO CREATE:", err);
+    return res.status(500).json({ error: "internal_error" });
   }
 });
 
 // -----------------------------------------------------------
-//  ROTA: ATUALIZAR EVENTO
+//  ROTA: UPDATE EVENT
 // -----------------------------------------------------------
 
 app.post("/update-event", validateToken, async (req, res) => {
   try {
     const { event_id, nome, data, hora, local } = req.body;
 
-    if (!event_id)
+    if (!event_id) {
       return res.status(400).json({ error: "event_id obrigatório" });
+    }
 
     const auth = getJwtClient();
     await auth.authorize();
@@ -283,6 +301,10 @@ app.post("/update-event", validateToken, async (req, res) => {
     if (local) event.location = local;
 
     if (data && hora) {
+      if (!validateBRDate(data)) {
+        return res.status(400).json({ error: "Data inválida" });
+      }
+
       const startISO = toISODateTime(data, hora);
       const endISO = addOneHourISO(startISO);
 
@@ -299,21 +321,22 @@ app.post("/update-event", validateToken, async (req, res) => {
     return res.json({ status: "updated", event: response.data });
 
   } catch (err) {
-    console.error("❌ ERRO AO ATUALIZAR EVENTO:", err);
-    return res.status(500).json({ error: "internal_error", details: err.message });
+    console.error("❌ ERRO UPDATE:", err);
+    return res.status(500).json({ error: "internal_error" });
   }
 });
 
 // -----------------------------------------------------------
-//  ROTA: DELETAR EVENTO
+//  ROTA: DELETE EVENT
 // -----------------------------------------------------------
 
 app.post("/delete-event", validateToken, async (req, res) => {
   try {
     const { event_id } = req.body;
 
-    if (!event_id)
+    if (!event_id) {
       return res.status(400).json({ error: "event_id obrigatório" });
+    }
 
     const auth = getJwtClient();
     await auth.authorize();
@@ -328,16 +351,16 @@ app.post("/delete-event", validateToken, async (req, res) => {
     return res.json({ status: "deleted", event_id });
 
   } catch (err) {
-    console.error("❌ ERRO AO DELETAR EVENTO:", err);
-    return res.status(500).json({ error: "internal_error", details: err.message });
+    console.error("❌ ERRO DELETE:", err);
+    return res.status(500).json({ error: "internal_error" });
   }
 });
 
 // -----------------------------------------------------------
-//  INICIAR SERVIDOR
+//  START SERVER
 // -----------------------------------------------------------
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log("🚀 API Rodando na porta " + PORT)
-);
+app.listen(PORT, () => {
+  console.log("🚀 API Google Calendar rodando na porta", PORT);
+});
