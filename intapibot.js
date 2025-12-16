@@ -1,10 +1,10 @@
 // -----------------------------------------------------------
-//  API COMPLETA GOOGLE CALENDAR — Clínica SaúdeSim
-//  • Service Account via arquivo
+//  API GOOGLE CALENDAR — Clínica SaúdeSim
+//  • Service Account
 //  • Sem Google Meet
 //  • Bloqueio de horários duplicados
-//  • Consulta de horários disponíveis (availability)
-//  • Rota /ping para manter servidor ativo
+//  • Consulta de horários disponíveis
+//  • Compatível com BotConversa
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -18,7 +18,7 @@ app.use(express.json());
 //  ROTA /ping
 // -----------------------------------------------------------
 
-app.get("/ping", (req, res) => {
+app.get("/ping", (_, res) => {
   return res.status(200).json({ status: "alive" });
 });
 
@@ -28,13 +28,15 @@ app.get("/ping", (req, res) => {
 
 app.use((req, res, next) => {
   const allowed = [
+    "/ping",
+    "/availability",
     "/create-event",
     "/update-event",
-    "/delete-event",
-    "/availability",
-    "/ping"
+    "/delete-event"
   ];
-  if (!allowed.includes(req.path)) return res.status(200).send("OK");
+  if (!allowed.includes(req.path)) {
+    return res.status(200).send("OK");
+  }
   next();
 });
 
@@ -43,12 +45,13 @@ app.use((req, res, next) => {
 // -----------------------------------------------------------
 
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 let serviceAccount;
 try {
   serviceAccount = require(SERVICE_ACCOUNT_PATH);
 } catch (err) {
-  console.error("❌ ERRO AO CARREGAR SERVICE ACCOUNT:", err);
+  console.error("❌ ERRO AO CARREGAR SERVICE ACCOUNT", err);
   process.exit(1);
 }
 
@@ -63,7 +66,6 @@ const GOOGLE_CALENDAR_ID =
   "2d896e5ad2fcc150e10efe24cce9156ab577442a74b70d9fcd89f7d166c8479c@group.calendar.google.com";
 
 const TIMEZONE = "America/Sao_Paulo";
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 // -----------------------------------------------------------
 //  AUTENTICAÇÃO GOOGLE
@@ -79,7 +81,19 @@ function getJwtClient() {
 }
 
 // -----------------------------------------------------------
-//  UTILITÁRIOS DE DATA (DD/MM/AAAA)
+//  VALIDAÇÃO TOKEN BOTCONVERSA
+// -----------------------------------------------------------
+
+function validateToken(req, res, next) {
+  const token = req.get("X-Webhook-Token");
+  if (!token || token !== WEBHOOK_SECRET) {
+    return res.status(403).json({ error: "unauthorized" });
+  }
+  next();
+}
+
+// -----------------------------------------------------------
+//  UTILITÁRIOS DE DATA
 // -----------------------------------------------------------
 
 function validateBRDate(dateStr) {
@@ -97,11 +111,6 @@ function validateBRDate(dateStr) {
   );
 }
 
-function toISODateTime(dateStr, timeStr) {
-  const [d, m, y] = dateStr.split("/");
-  return `${y}-${m}-${d}T${timeStr}:00-03:00`;
-}
-
 function startOfDayISO(dateStr) {
   const [d, m, y] = dateStr.split("/");
   return `${y}-${m}-${d}T00:00:00-03:00`;
@@ -112,6 +121,11 @@ function endOfDayISO(dateStr) {
   return `${y}-${m}-${d}T23:59:59-03:00`;
 }
 
+function toISODateTime(dateStr, timeStr) {
+  const [d, m, y] = dateStr.split("/");
+  return `${y}-${m}-${d}T${timeStr}:00-03:00`;
+}
+
 function addOneHourISO(startISO) {
   const date = new Date(startISO);
   date.setHours(date.getHours() + 1);
@@ -119,19 +133,7 @@ function addOneHourISO(startISO) {
 }
 
 // -----------------------------------------------------------
-//  VALIDAÇÃO TOKEN BOTCONVERSA
-// -----------------------------------------------------------
-
-function validateToken(req, res, next) {
-  const token = req.get("X-Webhook-Token");
-  if (!token || token !== WEBHOOK_SECRET) {
-    return res.status(403).json({ error: "Unauthorized" });
-  }
-  next();
-}
-
-// -----------------------------------------------------------
-//  VERIFICAR DUPLICIDADE
+//  VERIFICAR CONFLITO
 // -----------------------------------------------------------
 
 async function checkTimeSlot(calendar, startISO, endISO) {
@@ -139,10 +141,8 @@ async function checkTimeSlot(calendar, startISO, endISO) {
     calendarId: GOOGLE_CALENDAR_ID,
     timeMin: startISO,
     timeMax: endISO,
-    singleEvents: true,
-    orderBy: "startTime"
+    singleEvents: true
   });
-
   return response.data.items.length > 0;
 }
 
@@ -165,49 +165,40 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const calendar = google.calendar({ version: "v3", auth });
 
-    const timeMin = startOfDayISO(data);
-    const timeMax = endOfDayISO(data);
-
-    console.log("📅 AVAILABILITY:", data);
-
     const response = await calendar.events.list({
       calendarId: GOOGLE_CALENDAR_ID,
-      timeMin,
-      timeMax,
+      timeMin: startOfDayISO(data),
+      timeMax: endOfDayISO(data),
       singleEvents: true,
       orderBy: "startTime"
     });
 
     const events = response.data.items || [];
 
-    const occupiedHours = [
-      ...new Set(
-        events
-          .filter(e => e.start?.dateTime)
-          .map(e => {
-            const start = new Date(e.start.dateTime);
-            return start.toLocaleTimeString("pt-BR", {
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-              timeZone: TIMEZONE
-            });
-          })
-      )
-    ];
+    const occupied = events
+      .filter(e => e.start?.dateTime)
+      .map(e => {
+        const d = new Date(e.start.dateTime);
+        return d.toLocaleTimeString("pt-BR", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+          timeZone: TIMEZONE
+        });
+      });
 
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
     }
 
-    const availableHours = allHours.filter(
-      h => !occupiedHours.includes(h)
-    );
+    const available = allHours.filter(h => !occupied.includes(h));
 
     return res.json({
       date: data,
-      available_hours: availableHours
+      available_hours: available.length
+        ? available.join(" | ")
+        : ""
     });
 
   } catch (err) {
@@ -223,8 +214,9 @@ app.post("/availability", validateToken, async (req, res) => {
 app.post("/create-event", validateToken, async (req, res) => {
   try {
     const {
-      nome, email, fone, tipo_atd, data, hora,
-      pagto, libras, res_id, valor, local
+      nome, email, fone, tipo_atd,
+      data, hora, pagto, libras,
+      valor, res_id, local
     } = req.body;
 
     if (!nome || !email || !data || !hora) {
@@ -244,10 +236,7 @@ app.post("/create-event", validateToken, async (req, res) => {
     const endISO = addOneHourISO(startISO);
 
     if (await checkTimeSlot(calendar, startISO, endISO)) {
-      return res.status(409).json({
-        error: "conflict",
-        details: "Horário já ocupado"
-      });
+      return res.status(409).json({ error: "Horário já ocupado" });
     }
 
     const event = {
@@ -255,7 +244,7 @@ app.post("/create-event", validateToken, async (req, res) => {
       location: local || "",
       description:
         `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}` +
-        `\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nID Reserva: ${res_id}`,
+        `\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nReserva: ${res_id}`,
       start: { dateTime: startISO, timeZone: TIMEZONE },
       end: { dateTime: endISO, timeZone: TIMEZONE }
     };
@@ -265,7 +254,10 @@ app.post("/create-event", validateToken, async (req, res) => {
       resource: event
     });
 
-    return res.json({ status: "created", event_id: response.data.id });
+    return res.json({
+      status: "created",
+      event_id: response.data.id
+    });
 
   } catch (err) {
     console.error("❌ ERRO CREATE:", err);
@@ -289,7 +281,6 @@ app.post("/update-event", validateToken, async (req, res) => {
     await auth.authorize();
 
     const calendar = google.calendar({ version: "v3", auth });
-
     const original = await calendar.events.get({
       calendarId: GOOGLE_CALENDAR_ID,
       eventId: event_id
@@ -304,12 +295,14 @@ app.post("/update-event", validateToken, async (req, res) => {
       if (!validateBRDate(data)) {
         return res.status(400).json({ error: "Data inválida" });
       }
-
-      const startISO = toISODateTime(data, hora);
-      const endISO = addOneHourISO(startISO);
-
-      event.start = { dateTime: startISO, timeZone: TIMEZONE };
-      event.end = { dateTime: endISO, timeZone: TIMEZONE };
+      event.start = {
+        dateTime: toISODateTime(data, hora),
+        timeZone: TIMEZONE
+      };
+      event.end = {
+        dateTime: addOneHourISO(toISODateTime(data, hora)),
+        timeZone: TIMEZONE
+      };
     }
 
     const response = await calendar.events.update({
@@ -342,7 +335,6 @@ app.post("/delete-event", validateToken, async (req, res) => {
     await auth.authorize();
 
     const calendar = google.calendar({ version: "v3", auth });
-
     await calendar.events.delete({
       calendarId: GOOGLE_CALENDAR_ID,
       eventId: event_id
