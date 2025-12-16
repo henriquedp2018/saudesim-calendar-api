@@ -160,12 +160,21 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const events = response.data.items || [];
 
-    // Horários ocupados (HH:MM)
-    const occupiedHours = events.map(event => {
-      const start = event.start.dateTime || event.start.date;
-      const dateObj = new Date(start);
-      return dateObj.toISOString().substring(11, 16);
-    });
+    // 🔐 Horários ocupados (normalizados para HH:MM em America/Sao_Paulo)
+    const occupiedHours = [
+      ...new Set(
+        events
+          .filter(event => event.start && event.start.dateTime)
+          .map(event => {
+            const start = new Date(event.start.dateTime);
+            return start.toLocaleTimeString("pt-BR", {
+              hour: "2-digit",
+              minute: "2-digit",
+              timeZone: TIMEZONE
+            });
+          })
+      )
+    ];
 
     // Horários padrão (08:00 até 22:00)
     const allHours = [];
@@ -173,7 +182,7 @@ app.post("/availability", validateToken, async (req, res) => {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
     }
 
-    // Remove ocupados
+    // Remove horários ocupados
     const availableHours = allHours.filter(
       hour => !occupiedHours.includes(hour)
     );
