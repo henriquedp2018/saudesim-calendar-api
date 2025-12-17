@@ -1,7 +1,7 @@
 // -----------------------------------------------------------
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Service Account
-//  • Availability pronto para BotConversa
+//  • Availability compatível com BotConversa
 //  • Create / Update / Delete padronizados
 // -----------------------------------------------------------
 
@@ -73,7 +73,7 @@ function getJwtClient() {
 function validateToken(req, res, next) {
   const token = req.get("X-Webhook-Token");
   if (!token || token !== WEBHOOK_SECRET) {
-    return res.status(403).json({
+    return res.json({
       message: "Token inválido",
       status: "failure",
       summary: "Falha de autenticação",
@@ -123,7 +123,7 @@ async function checkTimeSlot(calendar, startISO, endISO) {
 }
 
 // -----------------------------------------------------------
-//  AVAILABILITY (PRONTO PARA BOTCONVERSA)
+//  AVAILABILITY (PADRÃO BOTCONVERSA)
 // -----------------------------------------------------------
 app.post("/availability", validateToken, async (req, res) => {
   try {
@@ -170,27 +170,29 @@ app.post("/availability", validateToken, async (req, res) => {
 
     if (!available.length) {
       return res.json({
-        message: `Não há horários disponíveis para ${data}. Deseja consultar outra data?`,
+        message: `Não há horários disponíveis para ${data}.`,
         status: "failure",
         summary: "Sem horários disponíveis",
-        variables: { data_consultada: data }
+        variables: {
+          data
+        }
       });
     }
 
     return res.json({
-      message: `Tenho horários disponíveis para ${data}:\n${available.join(", ")}\n\nQual horário você prefere?`,
+      message: `Tenho horários disponíveis para ${data}: ${available.join(", ")}.`,
       status: "success",
       summary: "Horários disponíveis",
       variables: {
-        data_consultada: data,
-        horarios_disponiveis: available.join(",")
+        data,
+        horarios_disponiveis: available.join(", ")
       }
     });
 
   } catch (err) {
     console.error(err);
     return res.json({
-      message: "Erro ao consultar horários. Tente novamente.",
+      message: "Erro ao consultar horários.",
       status: "failure",
       summary: "Erro interno availability",
       variables: {}
@@ -223,7 +225,7 @@ app.post("/create-event", validateToken, async (req, res) => {
 
     if (await checkTimeSlot(calendar, startISO, endISO)) {
       return res.json({
-        message: "Esse horário já está ocupado. Escolha outro.",
+        message: "Esse horário já está ocupado.",
         status: "failure",
         summary: "Conflito de horário",
         variables: {}
@@ -240,7 +242,7 @@ app.post("/create-event", validateToken, async (req, res) => {
     });
 
     return res.json({
-      message: `Consulta agendada com sucesso para ${data} às ${hora}.`,
+      message: "Consulta agendada com sucesso.",
       status: "success",
       summary: "Evento criado",
       variables: {
@@ -251,7 +253,6 @@ app.post("/create-event", validateToken, async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
     return res.json({
       message: "Erro ao criar agendamento.",
       status: "failure",
@@ -262,102 +263,9 @@ app.post("/create-event", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  UPDATE EVENT
-// -----------------------------------------------------------
-app.post("/update-event", validateToken, async (req, res) => {
-  try {
-    const { event_id, data, hora } = req.body;
-
-    if (!event_id) {
-      return res.json({
-        message: "event_id não informado.",
-        status: "failure",
-        summary: "ID ausente",
-        variables: {}
-      });
-    }
-
-    const auth = getJwtClient();
-    await auth.authorize();
-    const calendar = google.calendar({ version: "v3", auth });
-
-    const event = (await calendar.events.get({
-      calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id
-    })).data;
-
-    if (data && hora) {
-      event.start = { dateTime: toISODateTime(data, hora), timeZone: TIMEZONE };
-      event.end = { dateTime: addOneHourISO(event.start.dateTime), timeZone: TIMEZONE };
-    }
-
-    await calendar.events.update({
-      calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id,
-      resource: event
-    });
-
-    return res.json({
-      message: "Agendamento atualizado com sucesso.",
-      status: "success",
-      summary: "Evento atualizado",
-      variables: { event_id }
-    });
-
-  } catch (err) {
-    return res.json({
-      message: "Erro ao atualizar agendamento.",
-      status: "failure",
-      summary: "Erro interno update",
-      variables: {}
-    });
-  }
-});
-
-// -----------------------------------------------------------
-//  DELETE EVENT
-// -----------------------------------------------------------
-app.post("/delete-event", validateToken, async (req, res) => {
-  try {
-    const { event_id } = req.body;
-
-    if (!event_id) {
-      return res.json({
-        message: "event_id não informado.",
-        status: "failure",
-        summary: "ID ausente",
-        variables: {}
-      });
-    }
-
-    const auth = getJwtClient();
-    await auth.authorize();
-    const calendar = google.calendar({ version: "v3", auth });
-
-    await calendar.events.delete({
-      calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id
-    });
-
-    return res.json({
-      message: "Agendamento cancelado com sucesso.",
-      status: "success",
-      summary: "Evento deletado",
-      variables: { event_id }
-    });
-
-  } catch (err) {
-    return res.json({
-      message: "Erro ao cancelar agendamento.",
-      status: "failure",
-      summary: "Erro interno delete",
-      variables: {}
-    });
-  }
-});
-
+//  START SERVER
 // -----------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 API Google Calendar pronta para BotConversa na porta", PORT);
+  console.log("🚀 API SaúdeSim pronta para BotConversa na porta", PORT);
 });
