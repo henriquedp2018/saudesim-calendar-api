@@ -1,8 +1,7 @@
 // -----------------------------------------------------------
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
-//  • Service Account
-//  • Consulta de horários disponíveis
-//  • Retorno SIMPLES (STRING) para BotConversa
+//  • Retorno direto em TEXTO (sem mapeamento)
+//  • 100% compatível com BotConversa
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -13,76 +12,40 @@ const app = express();
 app.use(express.json());
 
 // -----------------------------------------------------------
-//  ROTA /ping
-// -----------------------------------------------------------
 app.get("/ping", (_, res) => {
-  return res.status(200).json({ status: "alive" });
+  res.json({ status: "alive" });
 });
 
-// -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS
-// -----------------------------------------------------------
-app.use((req, res, next) => {
-  const allowed = ["/ping", "/availability"];
-  if (!allowed.includes(req.path)) {
-    return res.status(200).send("OK");
-  }
-  next();
-});
-
-// -----------------------------------------------------------
-//  SERVICE ACCOUNT
 // -----------------------------------------------------------
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
-let serviceAccount;
-try {
-  serviceAccount = require(SERVICE_ACCOUNT_PATH);
-} catch (err) {
-  console.error("❌ ERRO AO CARREGAR SERVICE ACCOUNT:", err);
-  process.exit(1);
-}
+const serviceAccount = require(SERVICE_ACCOUNT_PATH);
 
-const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
-const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
-
-// -----------------------------------------------------------
-//  CONFIGURAÇÕES
-// -----------------------------------------------------------
 const GOOGLE_CALENDAR_ID =
   "2d896e5ad2fcc150e10efe24cce9156ab577442a74b70d9fcd89f7d166c8479c@group.calendar.google.com";
 
 const TIMEZONE = "America/Sao_Paulo";
 
 // -----------------------------------------------------------
-//  AUTENTICAÇÃO GOOGLE
-// -----------------------------------------------------------
 function getJwtClient() {
   return new google.auth.JWT(
-    GOOGLE_CLIENT_EMAIL,
+    serviceAccount.client_email,
     null,
-    GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    serviceAccount.private_key.replace(/\\n/g, "\n"),
     ["https://www.googleapis.com/auth/calendar"]
   );
 }
 
-// -----------------------------------------------------------
-//  TOKEN BOTCONVERSA
-// -----------------------------------------------------------
 function validateToken(req, res, next) {
-  const token = req.get("X-Webhook-Token");
-  if (!token || token !== WEBHOOK_SECRET) {
+  if (req.get("X-Webhook-Token") !== WEBHOOK_SECRET) {
     return res.status(403).json({ error: "unauthorized" });
   }
   next();
 }
 
 // -----------------------------------------------------------
-//  UTILITÁRIOS DE DATA
-// -----------------------------------------------------------
 function validateBRDate(dateStr) {
-  if (!dateStr) return false;
   return /^\d{2}\/\d{2}\/\d{4}$/.test(dateStr);
 }
 
@@ -97,15 +60,13 @@ function endOfDayISO(dateStr) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: AVAILABILITY (RETORNO SIMPLES)
-// -----------------------------------------------------------
 app.post("/availability", validateToken, async (req, res) => {
   try {
     const { data } = req.body;
 
     if (!validateBRDate(data)) {
-      return res.status(400).json({
-        horarios_disponiveis: "Data inválida."
+      return res.json({
+        message: "Data inválida. Use o formato DD/MM/AAAA."
       });
     }
 
@@ -142,26 +103,24 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const available = allHours.filter(h => !occupied.includes(h));
 
-    const textoFinal =
+    const texto =
       available.length > 0
-        ? available.join(" | ")
-        : "Nenhum horário disponível para esta data.";
+        ? `Horários disponíveis para ${data}:\n\n${available.join(" | ")}`
+        : `Não há horários disponíveis para ${data}.`;
 
-    // ⚠️ RETORNO ÚNICO, SIMPLES, STRING
+    // 👉 RETORNO DIRETO EM TEXTO
     return res.json({
-      horarios_disponiveis: textoFinal
+      message: texto
     });
 
   } catch (err) {
-    console.error("❌ ERRO AVAILABILITY:", err);
-    return res.status(500).json({
-      horarios_disponiveis: "Erro ao consultar agenda."
+    console.error(err);
+    return res.json({
+      message: "Erro ao consultar a agenda. Tente novamente."
     });
   }
 });
 
-// -----------------------------------------------------------
-//  START SERVER
 // -----------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
