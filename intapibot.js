@@ -2,8 +2,7 @@
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Service Account
 //  • Consulta de horários disponíveis
-//  • Bloqueio de horários duplicados
-//  • Retorno 100% compatível com BotConversa
+//  • Retorno SIMPLES (STRING) para BotConversa
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -24,13 +23,7 @@ app.get("/ping", (_, res) => {
 //  BLOQUEIO DE ROTAS
 // -----------------------------------------------------------
 app.use((req, res, next) => {
-  const allowed = [
-    "/ping",
-    "/availability",
-    "/create-event",
-    "/update-event",
-    "/delete-event"
-  ];
+  const allowed = ["/ping", "/availability"];
   if (!allowed.includes(req.path)) {
     return res.status(200).send("OK");
   }
@@ -90,17 +83,7 @@ function validateToken(req, res, next) {
 // -----------------------------------------------------------
 function validateBRDate(dateStr) {
   if (!dateStr) return false;
-  const regex = /^\d{2}\/\d{2}\/\d{4}$/;
-  if (!regex.test(dateStr)) return false;
-
-  const [d, m, y] = dateStr.split("/").map(Number);
-  const date = new Date(y, m - 1, d);
-
-  return (
-    date.getFullYear() === y &&
-    date.getMonth() === m - 1 &&
-    date.getDate() === d
-  );
+  return /^\d{2}\/\d{2}\/\d{4}$/.test(dateStr);
 }
 
 function startOfDayISO(dateStr) {
@@ -114,7 +97,7 @@ function endOfDayISO(dateStr) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: AVAILABILITY
+//  ROTA: AVAILABILITY (RETORNO SIMPLES)
 // -----------------------------------------------------------
 app.post("/availability", validateToken, async (req, res) => {
   try {
@@ -122,7 +105,7 @@ app.post("/availability", validateToken, async (req, res) => {
 
     if (!validateBRDate(data)) {
       return res.status(400).json({
-        error: "Data inválida. Use DD/MM/AAAA"
+        horarios_disponiveis: "Data inválida."
       });
     }
 
@@ -140,7 +123,6 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const events = response.data.items || [];
 
-    // Horários ocupados
     const occupied = events
       .filter(e => e.start?.dateTime)
       .map(e => {
@@ -153,7 +135,6 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
-    // Horários padrão (08:00 até 22:00)
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
@@ -161,25 +142,21 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const available = allHours.filter(h => !occupied.includes(h));
 
-    // 👉 STRING FINAL (OBRIGATÓRIA PARA BOTCONVERSA)
-    const horarios_disponiveis =
+    const textoFinal =
       available.length > 0
         ? available.join(" | ")
         : "Nenhum horário disponível para esta data.";
 
+    // ⚠️ RETORNO ÚNICO, SIMPLES, STRING
     return res.json({
-      date: data,
-
-      // ARRAY (debug / futuro)
-      available_hours_array: available,
-
-      // STRING (USAR NO MAPEAMENTO)
-      horarios_disponiveis: horarios_disponiveis
+      horarios_disponiveis: textoFinal
     });
 
   } catch (err) {
     console.error("❌ ERRO AVAILABILITY:", err);
-    return res.status(500).json({ error: "internal_error" });
+    return res.status(500).json({
+      horarios_disponiveis: "Erro ao consultar agenda."
+    });
   }
 });
 
@@ -188,5 +165,5 @@ app.post("/availability", validateToken, async (req, res) => {
 // -----------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 API Google Calendar rodando na porta", PORT);
+  console.log("🚀 API rodando na porta", PORT);
 });
