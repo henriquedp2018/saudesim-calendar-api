@@ -3,7 +3,7 @@
 //  • Service Account
 //  • Consulta de horários disponíveis
 //  • Bloqueio de horários duplicados
-//  • Retorno compatível com BotConversa
+//  • Retorno 100% compatível com BotConversa
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -173,7 +173,7 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const events = response.data.items || [];
 
-    // Horários ocupados (HH:MM)
+    // Horários ocupados
     const occupied = events
       .filter(e => e.start?.dateTime)
       .map(e => {
@@ -186,7 +186,7 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
-    // Horários padrão (08:00 até 22:00)
+    // Horários padrão
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
@@ -194,9 +194,14 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const available = allHours.filter(h => !occupied.includes(h));
 
+    // 🔥 CRÍTICO: retornar STRING, não array
+    const availableFormatted = available.length
+      ? available.join(" | ")
+      : "";
+
     return res.json({
       date: data,
-      available_hours: available
+      available_hours: availableFormatted
     });
 
   } catch (err) {
@@ -206,7 +211,7 @@ app.post("/availability", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: CREATE EVENT
+//  CREATE EVENT
 // -----------------------------------------------------------
 
 app.post("/create-event", validateToken, async (req, res) => {
@@ -258,89 +263,6 @@ app.post("/create-event", validateToken, async (req, res) => {
 
   } catch (err) {
     console.error("❌ ERRO CREATE:", err);
-    return res.status(500).json({ error: "internal_error" });
-  }
-});
-
-// -----------------------------------------------------------
-//  ROTA: UPDATE EVENT
-// -----------------------------------------------------------
-
-app.post("/update-event", validateToken, async (req, res) => {
-  try {
-    const { event_id, nome, data, hora, local } = req.body;
-
-    if (!event_id) {
-      return res.status(400).json({ error: "event_id obrigatório" });
-    }
-
-    const auth = getJwtClient();
-    await auth.authorize();
-    const calendar = google.calendar({ version: "v3", auth });
-
-    const original = await calendar.events.get({
-      calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id
-    });
-
-    const event = original.data;
-
-    if (nome) event.summary = `Consulta Clínica SaúdeSim - ${nome}`;
-    if (local) event.location = local;
-
-    if (data && hora) {
-      if (!validateBRDate(data)) {
-        return res.status(400).json({ error: "Data inválida" });
-      }
-      event.start = {
-        dateTime: toISODateTime(data, hora),
-        timeZone: TIMEZONE
-      };
-      event.end = {
-        dateTime: addOneHourISO(toISODateTime(data, hora)),
-        timeZone: TIMEZONE
-      };
-    }
-
-    const response = await calendar.events.update({
-      calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id,
-      resource: event
-    });
-
-    return res.json({ status: "updated", event: response.data });
-
-  } catch (err) {
-    console.error("❌ ERRO UPDATE:", err);
-    return res.status(500).json({ error: "internal_error" });
-  }
-});
-
-// -----------------------------------------------------------
-//  ROTA: DELETE EVENT
-// -----------------------------------------------------------
-
-app.post("/delete-event", validateToken, async (req, res) => {
-  try {
-    const { event_id } = req.body;
-
-    if (!event_id) {
-      return res.status(400).json({ error: "event_id obrigatório" });
-    }
-
-    const auth = getJwtClient();
-    await auth.authorize();
-    const calendar = google.calendar({ version: "v3", auth });
-
-    await calendar.events.delete({
-      calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id
-    });
-
-    return res.json({ status: "deleted", event_id });
-
-  } catch (err) {
-    console.error("❌ ERRO DELETE:", err);
     return res.status(500).json({ error: "internal_error" });
   }
 });
