@@ -2,8 +2,7 @@
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Service Account
 //  • Consulta de horários disponíveis
-//  • Retorno EM STRING (compatível com BotConversa)
-//  • Bloqueio de horários duplicados
+//  • Retorno em STRING (BotConversa compatível)
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -14,9 +13,8 @@ const app = express();
 app.use(express.json());
 
 // -----------------------------------------------------------
-//  ROTA /ping
+//  PING
 // -----------------------------------------------------------
-
 app.get("/ping", (_, res) => {
   return res.status(200).json({ status: "alive" });
 });
@@ -24,15 +22,8 @@ app.get("/ping", (_, res) => {
 // -----------------------------------------------------------
 //  BLOQUEIO DE ROTAS
 // -----------------------------------------------------------
-
 app.use((req, res, next) => {
-  const allowed = [
-    "/ping",
-    "/availability",
-    "/create-event",
-    "/update-event",
-    "/delete-event"
-  ];
+  const allowed = ["/ping", "/availability"];
   if (!allowed.includes(req.path)) {
     return res.status(200).send("OK");
   }
@@ -42,47 +33,37 @@ app.use((req, res, next) => {
 // -----------------------------------------------------------
 //  SERVICE ACCOUNT
 // -----------------------------------------------------------
-
 const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SA_KEY_FILE;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
-let serviceAccount;
-try {
-  serviceAccount = require(SERVICE_ACCOUNT_PATH);
-} catch (err) {
-  console.error("❌ ERRO AO CARREGAR SERVICE ACCOUNT:", err);
-  process.exit(1);
-}
+const serviceAccount = require(SERVICE_ACCOUNT_PATH);
 
 const GOOGLE_CLIENT_EMAIL = serviceAccount.client_email;
-const GOOGLE_PRIVATE_KEY = serviceAccount.private_key;
+const GOOGLE_PRIVATE_KEY = serviceAccount.private_key.replace(/\\n/g, "\n");
 
 // -----------------------------------------------------------
-//  CONFIGURAÇÕES
+//  CONFIG
 // -----------------------------------------------------------
-
 const GOOGLE_CALENDAR_ID =
   "2d896e5ad2fcc150e10efe24cce9156ab577442a74b70d9fcd89f7d166c8479c@group.calendar.google.com";
 
 const TIMEZONE = "America/Sao_Paulo";
 
 // -----------------------------------------------------------
-//  AUTENTICAÇÃO GOOGLE
+//  AUTH
 // -----------------------------------------------------------
-
 function getJwtClient() {
   return new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
     null,
-    GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    GOOGLE_PRIVATE_KEY,
     ["https://www.googleapis.com/auth/calendar"]
   );
 }
 
 // -----------------------------------------------------------
-//  TOKEN BOTCONVERSA
+//  TOKEN
 // -----------------------------------------------------------
-
 function validateToken(req, res, next) {
   const token = req.get("X-Webhook-Token");
   if (!token || token !== WEBHOOK_SECRET) {
@@ -92,22 +73,10 @@ function validateToken(req, res, next) {
 }
 
 // -----------------------------------------------------------
-//  UTILITÁRIOS DE DATA
+//  DATE UTILS
 // -----------------------------------------------------------
-
 function validateBRDate(dateStr) {
-  if (!dateStr) return false;
-  const regex = /^\d{2}\/\d{2}\/\d{4}$/;
-  if (!regex.test(dateStr)) return false;
-
-  const [d, m, y] = dateStr.split("/").map(Number);
-  const date = new Date(y, m - 1, d);
-
-  return (
-    date.getFullYear() === y &&
-    date.getMonth() === m - 1 &&
-    date.getDate() === d
-  );
+  return /^\d{2}\/\d{2}\/\d{4}$/.test(dateStr);
 }
 
 function startOfDayISO(dateStr) {
@@ -121,16 +90,15 @@ function endOfDayISO(dateStr) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: AVAILABILITY (CONSULTA DE HORÁRIOS)
+//  AVAILABILITY
 // -----------------------------------------------------------
-
 app.post("/availability", validateToken, async (req, res) => {
   try {
     const { data } = req.body;
 
     if (!validateBRDate(data)) {
       return res.status(400).json({
-        error: "Data inválida. Use DD/MM/AAAA"
+        horarios_disponiveis: ""
       });
     }
 
@@ -148,7 +116,6 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const events = response.data.items || [];
 
-    // Horários ocupados
     const occupied = events
       .filter(e => e.start?.dateTime)
       .map(e => {
@@ -161,7 +128,6 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
-    // Horários padrão (08:00 às 22:00)
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
@@ -169,27 +135,27 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const available = allHours.filter(h => !occupied.includes(h));
 
-    // 🔑 REGRA CRÍTICA: RETORNAR STRING, NÃO ARRAY
-    const availableString = available.length
+    // 🔥 STRING FINAL (BOTCONVERSA)
+    const horarios_disponiveis = available.length
       ? available.join(" | ")
-      : "";
+      : "Nenhum horário disponível";
 
     return res.json({
-      date: data,
-      available_hours: availableString
+      horarios_disponiveis
     });
 
   } catch (err) {
-    console.error("❌ ERRO AVAILABILITY:", err);
-    return res.status(500).json({ error: "internal_error" });
+    console.error("❌ AVAILABILITY ERROR:", err);
+    return res.status(500).json({
+      horarios_disponiveis: ""
+    });
   }
 });
 
 // -----------------------------------------------------------
-//  START SERVER
+//  START
 // -----------------------------------------------------------
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🚀 API Google Calendar rodando na porta", PORT);
+  console.log("🚀 API rodando na porta", PORT);
 });
