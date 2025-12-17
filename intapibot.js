@@ -2,8 +2,8 @@
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Service Account
 //  • Consulta de horários disponíveis
+//  • Retorno EM STRING (compatível com BotConversa)
 //  • Bloqueio de horários duplicados
-//  • Retorno 100% compatível com BotConversa
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -120,31 +120,6 @@ function endOfDayISO(dateStr) {
   return `${y}-${m}-${d}T23:59:59-03:00`;
 }
 
-function toISODateTime(dateStr, timeStr) {
-  const [d, m, y] = dateStr.split("/");
-  return `${y}-${m}-${d}T${timeStr}:00-03:00`;
-}
-
-function addOneHourISO(startISO) {
-  const date = new Date(startISO);
-  date.setHours(date.getHours() + 1);
-  return date.toISOString();
-}
-
-// -----------------------------------------------------------
-//  VERIFICAR CONFLITO
-// -----------------------------------------------------------
-
-async function checkTimeSlot(calendar, startISO, endISO) {
-  const response = await calendar.events.list({
-    calendarId: GOOGLE_CALENDAR_ID,
-    timeMin: startISO,
-    timeMax: endISO,
-    singleEvents: true
-  });
-  return response.data.items.length > 0;
-}
-
 // -----------------------------------------------------------
 //  ROTA: AVAILABILITY (CONSULTA DE HORÁRIOS)
 // -----------------------------------------------------------
@@ -186,7 +161,7 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
-    // Horários padrão
+    // Horários padrão (08:00 às 22:00)
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
@@ -194,75 +169,18 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const available = allHours.filter(h => !occupied.includes(h));
 
-    // 🔥 CRÍTICO: retornar STRING, não array
-    const availableFormatted = available.length
+    // 🔑 REGRA CRÍTICA: RETORNAR STRING, NÃO ARRAY
+    const availableString = available.length
       ? available.join(" | ")
       : "";
 
     return res.json({
       date: data,
-      available_hours: availableFormatted
+      available_hours: availableString
     });
 
   } catch (err) {
     console.error("❌ ERRO AVAILABILITY:", err);
-    return res.status(500).json({ error: "internal_error" });
-  }
-});
-
-// -----------------------------------------------------------
-//  CREATE EVENT
-// -----------------------------------------------------------
-
-app.post("/create-event", validateToken, async (req, res) => {
-  try {
-    const {
-      nome, email, fone, tipo_atd,
-      data, hora, pagto, libras,
-      valor, res_id, local
-    } = req.body;
-
-    if (!nome || !email || !data || !hora) {
-      return res.status(400).json({ error: "Campos obrigatórios ausentes" });
-    }
-
-    if (!validateBRDate(data)) {
-      return res.status(400).json({ error: "Data inválida" });
-    }
-
-    const auth = getJwtClient();
-    await auth.authorize();
-    const calendar = google.calendar({ version: "v3", auth });
-
-    const startISO = toISODateTime(data, hora);
-    const endISO = addOneHourISO(startISO);
-
-    if (await checkTimeSlot(calendar, startISO, endISO)) {
-      return res.status(409).json({ error: "Horário já ocupado" });
-    }
-
-    const event = {
-      summary: `Consulta Clínica SaúdeSim - ${nome}`,
-      location: local || "",
-      description:
-        `Paciente: ${nome}\nTelefone: ${fone}\nAtendimento: ${tipo_atd}` +
-        `\nPagamento: ${pagto}\nLibras: ${libras}\nValor: ${valor}\nReserva: ${res_id}`,
-      start: { dateTime: startISO, timeZone: TIMEZONE },
-      end: { dateTime: endISO, timeZone: TIMEZONE }
-    };
-
-    const response = await calendar.events.insert({
-      calendarId: GOOGLE_CALENDAR_ID,
-      resource: event
-    });
-
-    return res.json({
-      status: "created",
-      event_id: response.data.id
-    });
-
-  } catch (err) {
-    console.error("❌ ERRO CREATE:", err);
     return res.status(500).json({ error: "internal_error" });
   }
 });
