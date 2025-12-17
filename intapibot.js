@@ -117,7 +117,7 @@ function endOfDayISO(dateStr) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: AVAILABILITY (VERSÃO FINAL BOTCONVERSA)
+//  ROTA: AVAILABILITY (BOTCONVERSA FINAL)
 // -----------------------------------------------------------
 
 app.post("/availability", validateToken, async (req, res) => {
@@ -128,10 +128,8 @@ app.post("/availability", validateToken, async (req, res) => {
       return res.json({
         status: "failure",
         summary: "Data inválida",
-        variables: {
-          texto_exibicao:
-            "A data informada é inválida. Por favor, envie no formato DD/MM/AAAA."
-        }
+        date: data || "",
+        horarios_disponiveis: ""
       });
     }
 
@@ -143,11 +141,13 @@ app.post("/availability", validateToken, async (req, res) => {
       calendarId: GOOGLE_CALENDAR_ID,
       timeMin: startOfDayISO(data),
       timeMax: endOfDayISO(data),
-      singleEvents: true
+      singleEvents: true,
+      orderBy: "startTime"
     });
 
     const events = response.data.items || [];
 
+    // horários ocupados
     const occupied = events
       .filter(e => e.start?.dateTime)
       .map(e => {
@@ -160,32 +160,23 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
+    // horários padrão
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
     }
 
-    const available = allHours.filter(h => !occupied.includes(h));
+    // available_hours como ARRAY
+    const available_hours = allHours.filter(h => !occupied.includes(h));
 
-    if (available.length === 0) {
-      return res.json({
-        status: "success",
-        summary: "Sem horários",
-        variables: {
-          texto_exibicao:
-            `Para o dia ${data}, não há horários disponíveis. Deseja tentar outra data?`
-        }
-      });
-    }
+    // conversão FINAL para string (BOTCONVERSA)
+    const horarios_disponiveis = available_hours.join(", ");
 
     return res.json({
       status: "success",
       summary: "Horários disponíveis",
-      variables: {
-        texto_exibicao:
-          `Para o dia ${data}, temos os seguintes horários disponíveis:\n` +
-          `${available.join(", ")}\n\nQual horário você prefere?`
-      }
+      date: data,
+      horarios_disponiveis
     });
 
   } catch (err) {
@@ -193,10 +184,8 @@ app.post("/availability", validateToken, async (req, res) => {
     return res.json({
       status: "failure",
       summary: "Erro interno",
-      variables: {
-        texto_exibicao:
-          "No momento não foi possível consultar a agenda. Tente novamente em instantes."
-      }
+      date: "",
+      horarios_disponiveis: ""
     });
   }
 });
