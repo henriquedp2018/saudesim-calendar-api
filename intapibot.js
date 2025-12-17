@@ -1,17 +1,16 @@
 // -----------------------------------------------------------
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Service Account
-//  • Sem Google Meet
-//  • Bloqueio de horários duplicados
 //  • Consulta de horários disponíveis
-//  • Compatível com BotConversa
+//  • Bloqueio de horários duplicados
+//  • Retorno compatível com BotConversa
 // -----------------------------------------------------------
 
 require("dotenv").config();
 const express = require("express");
 const { google } = require("googleapis");
-const app = express();
 
+const app = express();
 app.use(express.json());
 
 // -----------------------------------------------------------
@@ -51,7 +50,7 @@ let serviceAccount;
 try {
   serviceAccount = require(SERVICE_ACCOUNT_PATH);
 } catch (err) {
-  console.error("❌ ERRO AO CARREGAR SERVICE ACCOUNT", err);
+  console.error("❌ ERRO AO CARREGAR SERVICE ACCOUNT:", err);
   process.exit(1);
 }
 
@@ -81,7 +80,7 @@ function getJwtClient() {
 }
 
 // -----------------------------------------------------------
-//  VALIDAÇÃO TOKEN BOTCONVERSA
+//  TOKEN BOTCONVERSA
 // -----------------------------------------------------------
 
 function validateToken(req, res, next) {
@@ -147,7 +146,7 @@ async function checkTimeSlot(calendar, startISO, endISO) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: AVAILABILITY
+//  ROTA: AVAILABILITY (CONSULTA DE HORÁRIOS)
 // -----------------------------------------------------------
 
 app.post("/availability", validateToken, async (req, res) => {
@@ -162,7 +161,6 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const auth = getJwtClient();
     await auth.authorize();
-
     const calendar = google.calendar({ version: "v3", auth });
 
     const response = await calendar.events.list({
@@ -175,6 +173,7 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const events = response.data.items || [];
 
+    // Horários ocupados (HH:MM)
     const occupied = events
       .filter(e => e.start?.dateTime)
       .map(e => {
@@ -187,6 +186,7 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
+    // Horários padrão (08:00 até 22:00)
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
@@ -196,9 +196,7 @@ app.post("/availability", validateToken, async (req, res) => {
 
     return res.json({
       date: data,
-      available_hours: available.length
-        ? available.join(" | ")
-        : ""
+      available_hours: available
     });
 
   } catch (err) {
@@ -229,7 +227,6 @@ app.post("/create-event", validateToken, async (req, res) => {
 
     const auth = getJwtClient();
     await auth.authorize();
-
     const calendar = google.calendar({ version: "v3", auth });
 
     const startISO = toISODateTime(data, hora);
@@ -279,8 +276,8 @@ app.post("/update-event", validateToken, async (req, res) => {
 
     const auth = getJwtClient();
     await auth.authorize();
-
     const calendar = google.calendar({ version: "v3", auth });
+
     const original = await calendar.events.get({
       calendarId: GOOGLE_CALENDAR_ID,
       eventId: event_id
@@ -333,8 +330,8 @@ app.post("/delete-event", validateToken, async (req, res) => {
 
     const auth = getJwtClient();
     await auth.authorize();
-
     const calendar = google.calendar({ version: "v3", auth });
+
     await calendar.events.delete({
       calendarId: GOOGLE_CALENDAR_ID,
       eventId: event_id
