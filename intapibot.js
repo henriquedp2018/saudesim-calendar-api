@@ -2,7 +2,7 @@
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Service Account
 //  • Consulta de horários disponíveis
-//  • Retorno DIRETO para BotConversa
+//  • Retorno COMPATÍVEL com BotConversa
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -117,7 +117,7 @@ function endOfDayISO(dateStr) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: AVAILABILITY (BOTCONVERSA FINAL)
+//  ROTA: AVAILABILITY (VERSÃO FINAL BOTCONVERSA)
 // -----------------------------------------------------------
 
 app.post("/availability", validateToken, async (req, res) => {
@@ -125,10 +125,8 @@ app.post("/availability", validateToken, async (req, res) => {
     const { data } = req.body;
 
     if (!validateBRDate(data)) {
-      return res.json({
-        status: "failure",
-        summary: "Data inválida",
-        date: data || "",
+      return res.status(200).json({
+        date: String(data || ""),
         horarios_disponiveis: ""
       });
     }
@@ -147,7 +145,7 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const events = response.data.items || [];
 
-    // horários ocupados
+    // Horários ocupados
     const occupied = events
       .filter(e => e.start?.dateTime)
       .map(e => {
@@ -160,30 +158,32 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
-    // horários padrão
+    // Horários padrão (08h às 22h)
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
     }
 
-    // available_hours como ARRAY
-    const available_hours = allHours.filter(h => !occupied.includes(h));
+    const available = allHours.filter(h => !occupied.includes(h));
 
-    // conversão FINAL para string (BOTCONVERSA)
-    const horarios_disponiveis = available_hours.join(", ");
+    // -----------------------------------------------------------
+    //  FORÇA STRING PLANA (CRÍTICO PARA BOTCONVERSA)
+    // -----------------------------------------------------------
 
-    return res.json({
-      status: "success",
-      summary: "Horários disponíveis",
-      date: data,
-      horarios_disponiveis
+    const horariosTexto = String(
+      available
+        .map(h => `${h}`)
+        .join(", ")
+    );
+
+    return res.status(200).json({
+      date: String(data),
+      horarios_disponiveis: horariosTexto
     });
 
   } catch (err) {
     console.error("❌ ERRO AVAILABILITY:", err);
-    return res.json({
-      status: "failure",
-      summary: "Erro interno",
+    return res.status(200).json({
       date: "",
       horarios_disponiveis: ""
     });
