@@ -31,7 +31,8 @@ app.use((req, res, next) => {
     "/availability",
     "/create-event",
     "/update-event",
-    "/delete-event"
+    "/delete-event",
+    "/cancel-by-reservation"
   ];
   if (!allowed.includes(req.path)) {
     return res.status(200).send("OK");
@@ -146,7 +147,7 @@ async function checkTimeSlot(calendar, startISO, endISO) {
 }
 
 // -----------------------------------------------------------
-//  ROTA: AVAILABILITY (CONSULTA DE HORÁRIOS)
+//  ROTA: AVAILABILITY
 // -----------------------------------------------------------
 
 app.post("/availability", validateToken, async (req, res) => {
@@ -154,9 +155,7 @@ app.post("/availability", validateToken, async (req, res) => {
     const { data } = req.body;
 
     if (!validateBRDate(data)) {
-      return res.status(400).json({
-        error: "Data inválida. Use DD/MM/AAAA"
-      });
+      return res.status(400).json({ error: "Data inválida. Use DD/MM/AAAA" });
     }
 
     const auth = getJwtClient();
@@ -173,7 +172,6 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const events = response.data.items || [];
 
-    // Horários ocupados (HH:MM)
     const occupied = events
       .filter(e => e.start?.dateTime)
       .map(e => {
@@ -186,7 +184,6 @@ app.post("/availability", validateToken, async (req, res) => {
         });
       });
 
-    // Horários padrão (08:00 até 22:00)
     const allHours = [];
     for (let h = 8; h < 23; h++) {
       allHours.push(`${String(h).padStart(2, "0")}:00`);
@@ -194,10 +191,7 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const available = allHours.filter(h => !occupied.includes(h));
 
-    return res.json({
-      date: data,
-      available_hours: available
-    });
+    return res.json({ date: data, available_hours: available });
 
   } catch (err) {
     console.error("❌ ERRO AVAILABILITY:", err);
@@ -251,10 +245,7 @@ app.post("/create-event", validateToken, async (req, res) => {
       resource: event
     });
 
-    return res.json({
-      status: "created",
-      event_id: response.data.id
-    });
+    return res.json({ status: "created", event_id: response.data.id });
 
   } catch (err) {
     console.error("❌ ERRO CREATE:", err);
@@ -263,61 +254,55 @@ app.post("/create-event", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: UPDATE EVENT
+//  ROTA: DELETE POR RESERVA (res_id)
 // -----------------------------------------------------------
 
-app.post("/update-event", validateToken, async (req, res) => {
+app.post("/cancel-by-reservation", validateToken, async (req, res) => {
   try {
-    const { event_id, nome, data, hora, local } = req.body;
+    const { res_id } = req.body;
 
-    if (!event_id) {
-      return res.status(400).json({ error: "event_id obrigatório" });
+    if (!res_id) {
+      return res.status(400).json({ error: "res_id obrigatório" });
     }
 
     const auth = getJwtClient();
     await auth.authorize();
     const calendar = google.calendar({ version: "v3", auth });
 
-    const original = await calendar.events.get({
+    const response = await calendar.events.list({
       calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id
+      singleEvents: true,
+      orderBy: "startTime",
+      maxResults: 50
     });
 
-    const event = original.data;
+    const event = (response.data.items || []).find(e =>
+      e.description && e.description.includes(`Reserva: ${res_id}`)
+    );
 
-    if (nome) event.summary = `Consulta Clínica SaúdeSim - ${nome}`;
-    if (local) event.location = local;
-
-    if (data && hora) {
-      if (!validateBRDate(data)) {
-        return res.status(400).json({ error: "Data inválida" });
-      }
-      event.start = {
-        dateTime: toISODateTime(data, hora),
-        timeZone: TIMEZONE
-      };
-      event.end = {
-        dateTime: addOneHourISO(toISODateTime(data, hora)),
-        timeZone: TIMEZONE
-      };
+    if (!event) {
+      return res.status(404).json({ error: "Reserva não encontrada" });
     }
 
-    const response = await calendar.events.update({
+    await calendar.events.delete({
       calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event_id,
-      resource: event
+      eventId: event.id
     });
 
-    return res.json({ status: "updated", event: response.data });
+    return res.json({
+      status: "deleted",
+      res_id,
+      event_id: event.id
+    });
 
   } catch (err) {
-    console.error("❌ ERRO UPDATE:", err);
+    console.error("❌ ERRO CANCELAMENTO:", err);
     return res.status(500).json({ error: "internal_error" });
   }
 });
 
 // -----------------------------------------------------------
-//  ROTA: DELETE EVENT
+//  ROTA: DELETE EVENT (event_id)
 // -----------------------------------------------------------
 
 app.post("/delete-event", validateToken, async (req, res) => {
