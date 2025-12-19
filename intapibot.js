@@ -102,10 +102,12 @@ function toISODateTime(dateStr, timeStr) {
   return `${y}-${m}-${d}T${timeStr}:00-03:00`;
 }
 
-function addOneHourISO(startISO) {
-  const date = new Date(startISO);
-  date.setHours(date.getHours() + 1);
-  return date.toISOString();
+// ⛔ NÃO USA toISOString — evita bug de timezone
+function addOneHourISO(dateStr, timeStr) {
+  const [d, m, y] = dateStr.split("/");
+  const hour = Number(timeStr.split(":")[0]) + 1;
+  const hh = String(hour).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:00:00-03:00`;
 }
 
 // -----------------------------------------------------------
@@ -136,10 +138,12 @@ app.post("/availability", validateToken, async (req, res) => {
     await auth.authorize();
     const calendar = google.calendar({ version: "v3", auth });
 
+    const isoDate = data.split("/").reverse().join("-");
+
     const response = await calendar.events.list({
       calendarId: GOOGLE_CALENDAR_ID,
-      timeMin: `${data.split("/").reverse().join("-")}T00:00:00-03:00`,
-      timeMax: `${data.split("/").reverse().join("-")}T23:59:59-03:00`,
+      timeMin: `${isoDate}T00:00:00-03:00`,
+      timeMax: `${isoDate}T23:59:59-03:00`,
       singleEvents: true
     });
 
@@ -200,7 +204,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     }
 
     const startISO = toISODateTime(data, hora);
-    const endISO = addOneHourISO(startISO);
+    const endISO = addOneHourISO(data, hora);
 
     if (await checkTimeSlot(calendar, startISO, endISO)) {
       return res.status(409).json({ error: "Horário já ocupado" });
@@ -210,7 +214,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     const hourNum = Number(hora.split(":")[0]);
     const valor = hourNum >= 18 ? 625 : 500;
 
-    // 🔹 Atualizar local se tipo_atd vier
+    // 🔹 Atualizar local se necessário
     if (tipo_atd === "online") {
       event.location = "Atendimento Online (Google Meet)";
     }
@@ -239,6 +243,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       resource: event
     });
 
+    // 🔹 RETORNO COMPATÍVEL COM BOTCONVERSA
     return res.json({
       status: "rescheduled",
       res_id,
