@@ -1,5 +1,8 @@
 // -----------------------------------------------------------
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
+//  • Reagendamento por res_id
+//  • Hora normalizada (HH:MM)
+//  • Valor recalculado corretamente
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -80,33 +83,41 @@ function validateToken(req, res, next) {
 }
 
 // -----------------------------------------------------------
-//  UTILITÁRIOS DE DATA
+//  UTILITÁRIOS
 // -----------------------------------------------------------
 function validateBRDate(dateStr) {
-  if (!dateStr) return false;
-  const regex = /^\d{2}\/\d{2}\/\d{4}$/;
-  if (!regex.test(dateStr)) return false;
-
-  const [d, m, y] = dateStr.split("/").map(Number);
-  const date = new Date(y, m - 1, d);
-
-  return (
-    date.getFullYear() === y &&
-    date.getMonth() === m - 1 &&
-    date.getDate() === d
-  );
+  return /^\d{2}\/\d{2}\/\d{4}$/.test(dateStr);
 }
 
-function toISODateTime(dateStr, timeStr) {
-  const [d, m, y] = dateStr.split("/");
-  return `${y}-${m}-${d}T${timeStr}:00-03:00`;
+// 🔒 NORMALIZA A HORA (21 → 21:00 | 9 → 09:00)
+function normalizeHour(hora) {
+  if (!hora) return null;
+
+  if (/^\d{1,2}$/.test(hora)) {
+    return `${String(hora).padStart(2, "0")}:00`;
+  }
+
+  if (/^\d{2}:\d{2}$/.test(hora)) {
+    return hora;
+  }
+
+  return null;
 }
 
-// ⛔ NÃO USA toISOString — evita bug de timezone
-function addOneHourISO(dateStr, timeStr) {
+function toISODateTime(dateStr, hora) {
+  const horaNormalizada = normalizeHour(hora);
+  if (!horaNormalizada) throw new Error("Hora inválida");
+
   const [d, m, y] = dateStr.split("/");
-  const hour = Number(timeStr.split(":")[0]) + 1;
-  const hh = String(hour).padStart(2, "0");
+  return `${y}-${m}-${d}T${horaNormalizada}:00-03:00`;
+}
+
+function addOneHourISO(dateStr, hora) {
+  const horaNormalizada = normalizeHour(hora);
+  const h = Number(horaNormalizada.split(":")[0]) + 1;
+  const hh = String(h).padStart(2, "0");
+
+  const [d, m, y] = dateStr.split("/");
   return `${y}-${m}-${d}T${hh}:00:00-03:00`;
 }
 
@@ -157,10 +168,7 @@ app.post("/availability", validateToken, async (req, res) => {
       if (!occupied.includes(hh)) available.push(hh);
     }
 
-    return res.json({
-      date: data,
-      available_hours: available
-    });
+    return res.json({ date: data, available_hours: available });
 
   } catch (err) {
     console.error("❌ ERRO AVAILABILITY:", err);
@@ -169,7 +177,7 @@ app.post("/availability", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: RESCHEDULE POR RESERVA (res_id)
+//  ROTA: RESCHEDULE POR RESERVA
 // -----------------------------------------------------------
 app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
   try {
@@ -210,11 +218,11 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       return res.status(409).json({ error: "Horário já ocupado" });
     }
 
-    // 🔹 Recalcular valor
-    const hourNum = Number(hora.split(":")[0]);
+    // 🔹 Valor recalculado corretamente
+    const hourNum = Number(normalizeHour(hora).split(":")[0]);
     const valor = hourNum >= 18 ? 625 : 500;
 
-    // 🔹 Atualizar local se necessário
+    // 🔹 Local opcional
     if (tipo_atd === "online") {
       event.location = "Atendimento Online (Google Meet)";
     }
@@ -224,14 +232,10 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
 
     // 🔹 Atualizar valor na descrição
     if (event.description) {
-      if (/Valor:\s?.*/i.test(event.description)) {
-        event.description = event.description.replace(
-          /Valor:\s?.*/i,
-          `Valor: ${valor}`
-        );
-      } else {
-        event.description += `\nValor: ${valor}`;
-      }
+      event.description = event.description.replace(
+        /Valor:\s?.*/i,
+        `Valor: ${valor}`
+      );
     }
 
     event.start = { dateTime: startISO, timeZone: TIMEZONE };
@@ -243,12 +247,12 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       resource: event
     });
 
-    // 🔹 RETORNO COMPATÍVEL COM BOTCONVERSA
+    // 🔹 RETORNO PARA BOTCONVERSA
     return res.json({
       status: "rescheduled",
       res_id,
       data,
-      hora,
+      hora: normalizeHour(hora),
       valor
     });
 
