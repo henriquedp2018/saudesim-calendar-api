@@ -1,6 +1,7 @@
 // -----------------------------------------------------------
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Reagendamento por res_id
+//  • Verificação de consulta por res_id
 //  • Horário 24h real (SEM bug de timezone)
 //  • Valor recalculado e retornado como STRING
 // -----------------------------------------------------------
@@ -26,7 +27,8 @@ app.use((req, res, next) => {
   const allowed = [
     "/ping",
     "/availability",
-    "/reschedule-by-reservation"
+    "/reschedule-by-reservation",
+    "/check-by-reservation"
   ];
   if (!allowed.includes(req.path)) {
     return res.status(200).send("OK");
@@ -89,7 +91,7 @@ function validateBRDate(dateStr) {
   return /^\d{2}\/\d{2}\/\d{4}$/.test(dateStr);
 }
 
-// GERA ISO FIXO SEM toISOString (EVITA BUG DE 21h → 9h)
+// ISO fixo (sem toISOString)
 function buildISO(dateStr, hourStr) {
   const [d, m, y] = dateStr.split("/");
   return `${y}-${m}-${d}T${hourStr}:00-03:00`;
@@ -161,16 +163,14 @@ app.post("/availability", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: RESCHEDULE POR RESERVA (res_id)
+//  ROTA: RESCHEDULE POR RESERVA
 // -----------------------------------------------------------
 app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
   try {
     const { res_id, data, hora, tipo_atd } = req.body;
 
     if (!res_id || !data || !hora) {
-      return res.status(400).json({
-        error: "res_id, data e hora são obrigatórios"
-      });
+      return res.status(400).json({ error: "res_id, data e hora são obrigatórios" });
     }
 
     if (!validateBRDate(data)) {
@@ -196,17 +196,15 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     }
 
     const startISO = buildISO(data, hora);
-    const endISO = buildISOPlusOneHour(data, hora);
+    const endISO   = buildISOPlusOneHour(data, hora);
 
     if (await checkTimeSlot(calendar, startISO, endISO)) {
       return res.status(409).json({ error: "Horário já ocupado" });
     }
 
-    // 🔹 Recalcular valor
     const hourNum = Number(hora.split(":")[0]);
     const valor = hourNum >= 18 ? 625 : 500;
 
-    // 🔹 Atualizar local
     if (tipo_atd === "online") {
       event.location = "Atendimento Online (Google Meet)";
     }
@@ -214,13 +212,9 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       event.location = "Rua Archimedes Naspolini, 2119, Criciúma - SC";
     }
 
-    // 🔹 Atualizar descrição
     if (event.description) {
       if (/Valor:\s?.*/i.test(event.description)) {
-        event.description = event.description.replace(
-          /Valor:\s?.*/i,
-          `Valor: ${valor}`
-        );
+        event.description = event.description.replace(/Valor:\s?.*/i, `Valor: ${valor}`);
       } else {
         event.description += `\nValor: ${valor}`;
       }
@@ -235,17 +229,89 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       resource: event
     });
 
-    // 🔹 RETORNO FINAL (BOTCONVERSA)
     return res.json({
       status: "rescheduled",
       res_id,
       data,
       hora,
-      valor: String(valor) // 👈 REGRA CRÍTICA
+      valor: String(valor)
     });
 
   } catch (err) {
     console.error("❌ ERRO RESCHEDULE:", err);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// -----------------------------------------------------------
+//  ROTA: CHECK POR RESERVA (VERIFICAR CONSULTA)
+// -----------------------------------------------------------
+app.post("/check-by-reservation", validateToken, async (req, res) => {
+  try {
+    const { res_id } = req.body;
+
+    if (!res_id) {
+      return res.status(400).json({ error: "res_id obrigatório" });
+    }
+
+    const auth = getJwtClient();
+    await auth.authorize();
+    const calendar = google.calendar({ version: "v3", auth });
+
+    const response = await calendar.events.list({
+      calendarId: GOOGLE_CALENDAR_ID,
+      singleEvents: true,
+      maxResults: 50
+    });
+
+    const event = (response.data.items || []).find(e =>
+      e.description && e.description.includes(`Reserva: ${res_id}`)
+    );
+
+    if (!event) {
+      return res.status(404).json({ error: "Consulta não encontrada" });
+    }
+
+    const start = new Date(event.start.dateTime);
+
+    const data = start.toLocaleDateString("pt-BR", { timeZone: TIMEZONE });
+    const hora = start.toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: TIMEZONE
+    });
+
+    let tipo_atd = "Presencial";
+    let local = event.location || "Não informado";
+
+    if (/meet|online/i.test(local)) {
+      tipo_atd = "Online";
+      local = "Atendimento Online via Google Meet";
+    }
+
+    let pagto = "Não informado";
+    let valor = "Não informado";
+
+    if (event.description) {
+      const p = event.description.match(/Pagamento:\s*(.*)/i);
+      const v = event.description.match(/Valor:\s*(.*)/i);
+      if (p) pagto = p[1].trim();
+      if (v) valor = v[1].trim();
+    }
+
+    return res.json({
+      data: String(data),
+      hora: String(hora),
+      tipo_atd: String(tipo_atd),
+      res_id: String(res_id),
+      local: String(local),
+      pagto: String(pagto),
+      valor: String(valor)
+    });
+
+  } catch (err) {
+    console.error("❌ ERRO CHECK:", err);
     return res.status(500).json({ error: "internal_error" });
   }
 });
