@@ -23,10 +23,6 @@ app.use((req, res, next) => {
   const allowed = [
     "/ping",
     "/availability",
-    "/create-event",
-    "/update-event",
-    "/delete-event",
-    "/cancel-by-reservation",
     "/reschedule-by-reservation"
   ];
   if (!allowed.includes(req.path)) {
@@ -101,16 +97,6 @@ function validateBRDate(dateStr) {
   );
 }
 
-function startOfDayISO(dateStr) {
-  const [d, m, y] = dateStr.split("/");
-  return `${y}-${m}-${d}T00:00:00-03:00`;
-}
-
-function endOfDayISO(dateStr) {
-  const [d, m, y] = dateStr.split("/");
-  return `${y}-${m}-${d}T23:59:59-03:00`;
-}
-
 function toISODateTime(dateStr, timeStr) {
   const [d, m, y] = dateStr.split("/");
   return `${y}-${m}-${d}T${timeStr}:00-03:00`;
@@ -143,7 +129,7 @@ app.post("/availability", validateToken, async (req, res) => {
     const { data } = req.body;
 
     if (!validateBRDate(data)) {
-      return res.status(400).json({ error: "Data inválida. Use DD/MM/AAAA" });
+      return res.status(400).json({ error: "Data inválida" });
     }
 
     const auth = getJwtClient();
@@ -152,32 +138,20 @@ app.post("/availability", validateToken, async (req, res) => {
 
     const response = await calendar.events.list({
       calendarId: GOOGLE_CALENDAR_ID,
-      timeMin: startOfDayISO(data),
-      timeMax: endOfDayISO(data),
-      singleEvents: true,
-      orderBy: "startTime"
+      timeMin: `${data.split("/").reverse().join("-")}T00:00:00-03:00`,
+      timeMax: `${data.split("/").reverse().join("-")}T23:59:59-03:00`,
+      singleEvents: true
     });
 
-    const events = response.data.items || [];
-
-    const occupied = events
+    const occupied = (response.data.items || [])
       .filter(e => e.start?.dateTime)
-      .map(e => {
-        const d = new Date(e.start.dateTime);
-        return d.toLocaleTimeString("pt-BR", {
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-          timeZone: TIMEZONE
-        });
-      });
+      .map(e => e.start.dateTime.substring(11, 16));
 
-    const allHours = [];
+    const available = [];
     for (let h = 8; h < 23; h++) {
-      allHours.push(`${String(h).padStart(2, "0")}:00`);
+      const hh = `${String(h).padStart(2, "0")}:00`;
+      if (!occupied.includes(hh)) available.push(hh);
     }
-
-    const available = allHours.filter(h => !occupied.includes(h));
 
     return res.json({ date: data, available_hours: available });
 
@@ -192,7 +166,7 @@ app.post("/availability", validateToken, async (req, res) => {
 // -----------------------------------------------------------
 app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
   try {
-    const { res_id, data, hora } = req.body;
+    const { res_id, data, hora, tipo_atd } = req.body;
 
     if (!res_id || !data || !hora) {
       return res.status(400).json({
@@ -208,11 +182,9 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     await auth.authorize();
     const calendar = google.calendar({ version: "v3", auth });
 
-    // Buscar evento pelo res_id
     const response = await calendar.events.list({
       calendarId: GOOGLE_CALENDAR_ID,
       singleEvents: true,
-      orderBy: "startTime",
       maxResults: 50
     });
 
@@ -231,6 +203,26 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       return res.status(409).json({ error: "Horário já ocupado" });
     }
 
+    // 🔹 Recalcular valor
+    const hourNum = Number(hora.split(":")[0]);
+    const novoValor = hourNum >= 18 ? 625 : 500;
+
+    // 🔹 Atualizar local se tipo_atd vier
+    if (tipo_atd === "online") {
+      event.location = "Atendimento Online (Google Meet)";
+    }
+    if (tipo_atd === "presencial") {
+      event.location = "Rua Archimedes Naspolini, 2119, Criciúma - SC";
+    }
+
+    // 🔹 Atualizar descrição mantendo histórico
+    if (event.description) {
+      event.description = event.description.replace(
+        /Valor:\s?.*/i,
+        `Valor: ${novoValor}`
+      );
+    }
+
     event.start = { dateTime: startISO, timeZone: TIMEZONE };
     event.end = { dateTime: endISO, timeZone: TIMEZONE };
 
@@ -244,7 +236,8 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       status: "rescheduled",
       res_id,
       nova_data: data,
-      novo_horario: hora
+      novo_horario: hora,
+      novo_valor: novoValor
     });
 
   } catch (err) {
