@@ -1,6 +1,8 @@
 // -----------------------------------------------------------
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
-//  • RESCHEDULE SEM BUG DE TIMEZONE
+//  • Reagendamento por res_id
+//  • Horário 24h real (SEM bug de timezone)
+//  • Valor recalculado e retornado como STRING
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -81,22 +83,22 @@ function validateToken(req, res, next) {
 }
 
 // -----------------------------------------------------------
-//  UTILITÁRIOS DE DATA
+//  UTILITÁRIOS
 // -----------------------------------------------------------
 function validateBRDate(dateStr) {
-  const regex = /^\d{2}\/\d{2}\/\d{4}$/;
-  return regex.test(dateStr);
+  return /^\d{2}\/\d{2}\/\d{4}$/.test(dateStr);
 }
 
-// 🔒 FUNÇÃO DEFINITIVA (SEM Date, SEM UTC, SEM BUG)
-function buildISO(dateStr, hora, addHour = false) {
+// GERA ISO FIXO SEM toISOString (EVITA BUG DE 21h → 9h)
+function buildISO(dateStr, hourStr) {
   const [d, m, y] = dateStr.split("/");
-  let h = Number(hora.split(":")[0]);
+  return `${y}-${m}-${d}T${hourStr}:00-03:00`;
+}
 
-  if (addHour) h += 1;
-
-  const hh = String(h).padStart(2, "0");
-
+function buildISOPlusOneHour(dateStr, hourStr) {
+  const [h] = hourStr.split(":").map(Number);
+  const hh = String(h + 1).padStart(2, "0");
+  const [d, m, y] = dateStr.split("/");
   return `${y}-${m}-${d}T${hh}:00:00-03:00`;
 }
 
@@ -194,7 +196,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     }
 
     const startISO = buildISO(data, hora);
-    const endISO = buildISO(data, hora, true);
+    const endISO = buildISOPlusOneHour(data, hora);
 
     if (await checkTimeSlot(calendar, startISO, endISO)) {
       return res.status(409).json({ error: "Horário já ocupado" });
@@ -225,7 +227,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     }
 
     event.start = { dateTime: startISO, timeZone: TIMEZONE };
-    event.end = { dateTime: endISO, timeZone: TIMEZONE };
+    event.end   = { dateTime: endISO,   timeZone: TIMEZONE };
 
     await calendar.events.update({
       calendarId: GOOGLE_CALENDAR_ID,
@@ -233,12 +235,13 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       resource: event
     });
 
+    // 🔹 RETORNO FINAL (BOTCONVERSA)
     return res.json({
       status: "rescheduled",
       res_id,
       data,
       hora,
-      valor
+      valor: String(valor) // 👈 REGRA CRÍTICA
     });
 
   } catch (err) {
