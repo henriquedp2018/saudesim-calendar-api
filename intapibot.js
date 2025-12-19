@@ -153,7 +153,10 @@ app.post("/availability", validateToken, async (req, res) => {
       if (!occupied.includes(hh)) available.push(hh);
     }
 
-    return res.json({ date: data, available_hours: available });
+    return res.json({
+      date: data,
+      available_hours: available
+    });
 
   } catch (err) {
     console.error("❌ ERRO AVAILABILITY:", err);
@@ -205,7 +208,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
 
     // 🔹 Recalcular valor
     const hourNum = Number(hora.split(":")[0]);
-    const novoValor = hourNum >= 18 ? 625 : 500;
+    const valor = hourNum >= 18 ? 625 : 500;
 
     // 🔹 Atualizar local se tipo_atd vier
     if (tipo_atd === "online") {
@@ -215,12 +218,16 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
       event.location = "Rua Archimedes Naspolini, 2119, Criciúma - SC";
     }
 
-    // 🔹 Atualizar descrição mantendo histórico
+    // 🔹 Atualizar valor na descrição
     if (event.description) {
-      event.description = event.description.replace(
-        /Valor:\s?.*/i,
-        `Valor: ${novoValor}`
-      );
+      if (/Valor:\s?.*/i.test(event.description)) {
+        event.description = event.description.replace(
+          /Valor:\s?.*/i,
+          `Valor: ${valor}`
+        );
+      } else {
+        event.description += `\nValor: ${valor}`;
+      }
     }
 
     event.start = { dateTime: startISO, timeZone: TIMEZONE };
@@ -235,9 +242,9 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     return res.json({
       status: "rescheduled",
       res_id,
-      nova_data: data,
-      novo_horario: hora,
-      novo_valor: novoValor
+      data,
+      hora,
+      valor
     });
 
   } catch (err) {
