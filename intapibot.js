@@ -2,6 +2,7 @@
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
 //  • Criar consulta
 //  • Reagendar por res_id
+//  • Cancelar consulta por res_id
 //  • Verificar consulta por res_id
 //  • Ver disponibilidade
 //  • Horário 24h real (SEM bug de timezone)
@@ -22,7 +23,7 @@ app.get("/ping", (_, res) => {
 });
 
 // -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS (CORRIGIDO)
+//  BLOQUEIO DE ROTAS (ATUALIZADO)
 // -----------------------------------------------------------
 app.use((req, res, next) => {
   const allowed = [
@@ -30,7 +31,8 @@ app.use((req, res, next) => {
     "/availability",
     "/create-event",
     "/reschedule-by-reservation",
-    "/check-by-reservation"
+    "/check-by-reservation",
+    "/cancel"
   ];
   if (!allowed.includes(req.path)) {
     return res.status(200).send("OK");
@@ -244,18 +246,14 @@ Libras: ${libras}`,
 });
 
 // -----------------------------------------------------------
-//  ROTA: RESCHEDULE POR RESERVA
+//  ROTA: CANCELAR CONSULTA
 // -----------------------------------------------------------
-app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
+app.post("/cancel", validateToken, async (req, res) => {
   try {
-    const { res_id, data, hora, tipo_atd } = req.body;
+    const { res_id } = req.body;
 
-    if (!res_id || !data || !hora) {
-      return res.status(400).json({ error: "res_id, data e hora são obrigatórios" });
-    }
-
-    if (!validateBRDate(data)) {
-      return res.status(400).json({ error: "Data inválida" });
+    if (!res_id) {
+      return res.status(400).json({ error: "res_id obrigatório" });
     }
 
     const auth = getJwtClient();
@@ -273,38 +271,21 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     );
 
     if (!event) {
-      return res.status(404).json({ error: "Reserva não encontrada" });
+      return res.status(404).json({ error: "Consulta não encontrada" });
     }
 
-    const startISO = buildISO(data, hora);
-    const endISO   = buildISOPlusOneHour(data, hora);
-
-    if (await checkTimeSlot(calendar, startISO, endISO)) {
-      return res.status(409).json({ error: "Horário já ocupado" });
-    }
-
-    const hourNum = Number(hora.split(":")[0]);
-    const valor = hourNum >= 18 ? 625 : 500;
-
-    event.start = { dateTime: startISO, timeZone: TIMEZONE };
-    event.end   = { dateTime: endISO,   timeZone: TIMEZONE };
-
-    await calendar.events.update({
+    await calendar.events.delete({
       calendarId: GOOGLE_CALENDAR_ID,
-      eventId: event.id,
-      resource: event
+      eventId: event.id
     });
 
     return res.json({
-      status: "rescheduled",
-      res_id,
-      data,
-      hora,
-      valor: String(valor)
+      status: "cancelled",
+      res_id: String(res_id)
     });
 
   } catch (err) {
-    console.error("❌ ERRO RESCHEDULE:", err);
+    console.error("❌ ERRO CANCEL:", err);
     return res.status(500).json({ error: "internal_error" });
   }
 });
