@@ -65,9 +65,7 @@ function buildISOPlusOneHour(date, hora) {
 // -----------------------------------------------------------
 app.post("/availability", validateToken, async (req, res) => {
   const { data } = req.body;
-  if (!validateBRDate(data)) {
-    return res.status(400).json({ error: "Data inválida" });
-  }
+  if (!validateBRDate(data)) return res.status(400).json({ error: "Data inválida" });
 
   const auth = getJwtClient();
   await auth.authorize();
@@ -95,25 +93,12 @@ app.post("/availability", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  CREATE EVENT (ATUALIZADO)
+//  CREATE EVENT
 // -----------------------------------------------------------
 app.post("/create-event", validateToken, async (req, res) => {
-  const {
-    nome,
-    data,
-    hora,
-    email,
-    fone,
-    tipo_atd,
-    pagto,
-    valor,
-    libras,
-    res_id
-  } = req.body;
-
-  if (!nome || !data || !hora || !res_id) {
+  const { nome, data, hora, tipo_atd, res_id } = req.body;
+  if (!nome || !data || !hora || !res_id)
     return res.status(400).json({ error: "Dados obrigatórios ausentes" });
-  }
 
   const auth = getJwtClient();
   await auth.authorize();
@@ -121,27 +106,17 @@ app.post("/create-event", validateToken, async (req, res) => {
 
   const event = {
     summary: `Consulta - ${nome}`,
+    description: `Reserva: ${res_id}`,
+    start: { dateTime: buildISO(data, hora), timeZone: TIMEZONE },
+    end: { dateTime: buildISOPlusOneHour(data, hora), timeZone: TIMEZONE },
     location:
       tipo_atd === "online"
         ? "Atendimento Online (Google Meet)"
-        : "Rua Archimedes Naspolini, 2119, Criciúma - SC",
-
-    description:
-`Reserva: ${res_id}
-Telefone: ${fone || "Não informado"}
-Email: ${email || "Não informado"}
-Pagamento: ${pagto || "Não informado"}
-Valor: ${valor || "Não informado"}
-Libras: ${libras || "Não informado"}`,
-
-    start: { dateTime: buildISO(data, hora), timeZone: TIMEZONE },
-    end:   { dateTime: buildISOPlusOneHour(data, hora), timeZone: TIMEZONE }
+        : "Rua Archimedes Naspolini, 2119"
   };
 
   if (tipo_atd === "online") {
-    event.conferenceData = {
-      createRequest: { requestId: `meet-${res_id}` }
-    };
+    event.conferenceData = { createRequest: { requestId: `meet-${res_id}` } };
   }
 
   const r = await calendar.events.insert({
@@ -150,15 +125,11 @@ Libras: ${libras || "Não informado"}`,
     conferenceDataVersion: 1
   });
 
-  res.json({
-    status: "created",
-    res_id,
-    meet_link: r.data.hangoutLink || ""
-  });
+  res.json({ status: "created", res_id, meet_link: r.data.hangoutLink || "" });
 });
 
 // -----------------------------------------------------------
-//  RESCHEDULE
+//  RESCHEDULE (ADIAR) — CORRIGIDO
 // -----------------------------------------------------------
 app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
   const { res_id, data, hora } = req.body;
@@ -176,9 +147,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     e.description?.includes(`Reserva: ${res_id}`)
   );
 
-  if (!event) {
-    return res.status(404).json({ error: "Reserva não encontrada" });
-  }
+  if (!event) return res.status(404).json({ error: "Reserva não encontrada" });
 
   event.start.dateTime = buildISO(data, hora);
   event.end.dateTime = buildISOPlusOneHour(data, hora);
@@ -211,9 +180,7 @@ app.post("/cancel", validateToken, async (req, res) => {
     e.description?.includes(`Reserva: ${res_id}`)
   );
 
-  if (!event) {
-    return res.status(404).json({ error: "Consulta não encontrada" });
-  }
+  if (!event) return res.status(404).json({ error: "Consulta não encontrada" });
 
   await calendar.events.delete({
     calendarId: GOOGLE_CALENDAR_ID,
@@ -224,7 +191,7 @@ app.post("/cancel", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  FALLBACK
+//  BLOQUEIO DE ROTAS — SEM QUEBRAR
 // -----------------------------------------------------------
 app.use((req, res) => {
   res.status(200).send("OK");
@@ -232,3 +199,4 @@ app.use((req, res) => {
 
 // -----------------------------------------------------------
 app.listen(process.env.PORT || 3000);
+
