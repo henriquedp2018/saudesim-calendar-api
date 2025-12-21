@@ -1,9 +1,10 @@
 // -----------------------------------------------------------
 //  API GOOGLE CALENDAR — Clínica SaúdeSim
-//  • Reagendamento por res_id
-//  • Verificação de consulta por res_id
+//  • Criar consulta
+//  • Reagendar por res_id
+//  • Verificar consulta por res_id
+//  • Ver disponibilidade
 //  • Horário 24h real (SEM bug de timezone)
-//  • Valor recalculado e retornado como STRING
 // -----------------------------------------------------------
 
 require("dotenv").config();
@@ -21,12 +22,13 @@ app.get("/ping", (_, res) => {
 });
 
 // -----------------------------------------------------------
-//  BLOQUEIO DE ROTAS
+//  BLOQUEIO DE ROTAS (CORRIGIDO)
 // -----------------------------------------------------------
 app.use((req, res, next) => {
   const allowed = [
     "/ping",
     "/availability",
+    "/create-event",
     "/reschedule-by-reservation",
     "/check-by-reservation"
   ];
@@ -91,7 +93,6 @@ function validateBRDate(dateStr) {
   return /^\d{2}\/\d{2}\/\d{4}$/.test(dateStr);
 }
 
-// ISO fixo (sem toISOString)
 function buildISO(dateStr, hourStr) {
   const [d, m, y] = dateStr.split("/");
   return `${y}-${m}-${d}T${hourStr}:00-03:00`;
@@ -163,6 +164,86 @@ app.post("/availability", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
+//  ROTA: CREATE EVENT
+// -----------------------------------------------------------
+app.post("/create-event", validateToken, async (req, res) => {
+  try {
+    const {
+      nome,
+      data,
+      hora,
+      email,
+      fone,
+      tipo_atd,
+      pagto,
+      valor,
+      libras,
+      res_id
+    } = req.body;
+
+    if (!nome || !data || !hora || !res_id) {
+      return res.status(400).json({ error: "Dados obrigatórios ausentes" });
+    }
+
+    if (!validateBRDate(data)) {
+      return res.status(400).json({ error: "Data inválida" });
+    }
+
+    const auth = getJwtClient();
+    await auth.authorize();
+    const calendar = google.calendar({ version: "v3", auth });
+
+    const startISO = buildISO(data, hora);
+    const endISO   = buildISOPlusOneHour(data, hora);
+
+    if (await checkTimeSlot(calendar, startISO, endISO)) {
+      return res.status(409).json({ error: "Horário já ocupado" });
+    }
+
+    const event = {
+      summary: `Consulta - ${nome}`,
+      description:
+`Reserva: ${res_id}
+Telefone: ${fone}
+Email: ${email}
+Pagamento: ${pagto}
+Valor: ${valor}
+Libras: ${libras}`,
+      start: { dateTime: startISO, timeZone: TIMEZONE },
+      end:   { dateTime: endISO,   timeZone: TIMEZONE },
+      location:
+        tipo_atd === "online"
+          ? "Atendimento Online (Google Meet)"
+          : "Rua Archimedes Naspolini, 2119, Criciúma - SC"
+    };
+
+    if (tipo_atd === "online") {
+      event.conferenceData = {
+        createRequest: {
+          requestId: `meet-${res_id}`
+        }
+      };
+    }
+
+    const response = await calendar.events.insert({
+      calendarId: GOOGLE_CALENDAR_ID,
+      resource: event,
+      conferenceDataVersion: 1
+    });
+
+    return res.json({
+      status: "created",
+      res_id: String(res_id),
+      meet_link: response.data.hangoutLink || ""
+    });
+
+  } catch (err) {
+    console.error("❌ ERRO CREATE:", err);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// -----------------------------------------------------------
 //  ROTA: RESCHEDULE POR RESERVA
 // -----------------------------------------------------------
 app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
@@ -205,21 +286,6 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
     const hourNum = Number(hora.split(":")[0]);
     const valor = hourNum >= 18 ? 625 : 500;
 
-    if (tipo_atd === "online") {
-      event.location = "Atendimento Online (Google Meet)";
-    }
-    if (tipo_atd === "presencial") {
-      event.location = "Rua Archimedes Naspolini, 2119, Criciúma - SC";
-    }
-
-    if (event.description) {
-      if (/Valor:\s?.*/i.test(event.description)) {
-        event.description = event.description.replace(/Valor:\s?.*/i, `Valor: ${valor}`);
-      } else {
-        event.description += `\nValor: ${valor}`;
-      }
-    }
-
     event.start = { dateTime: startISO, timeZone: TIMEZONE };
     event.end   = { dateTime: endISO,   timeZone: TIMEZONE };
 
@@ -244,7 +310,7 @@ app.post("/reschedule-by-reservation", validateToken, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-//  ROTA: CHECK POR RESERVA (VERIFICAR CONSULTA)
+//  ROTA: CHECK POR RESERVA
 // -----------------------------------------------------------
 app.post("/check-by-reservation", validateToken, async (req, res) => {
   try {
@@ -274,40 +340,16 @@ app.post("/check-by-reservation", validateToken, async (req, res) => {
 
     const start = new Date(event.start.dateTime);
 
-    const data = start.toLocaleDateString("pt-BR", { timeZone: TIMEZONE });
-    const hora = start.toLocaleTimeString("pt-BR", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-      timeZone: TIMEZONE
-    });
-
-    let tipo_atd = "Presencial";
-    let local = event.location || "Não informado";
-
-    if (/meet|online/i.test(local)) {
-      tipo_atd = "Online";
-      local = "Atendimento Online via Google Meet";
-    }
-
-    let pagto = "Não informado";
-    let valor = "Não informado";
-
-    if (event.description) {
-      const p = event.description.match(/Pagamento:\s*(.*)/i);
-      const v = event.description.match(/Valor:\s*(.*)/i);
-      if (p) pagto = p[1].trim();
-      if (v) valor = v[1].trim();
-    }
-
     return res.json({
-      data: String(data),
-      hora: String(hora),
-      tipo_atd: String(tipo_atd),
+      data: start.toLocaleDateString("pt-BR", { timeZone: TIMEZONE }),
+      hora: start.toLocaleTimeString("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: TIMEZONE
+      }),
       res_id: String(res_id),
-      local: String(local),
-      pagto: String(pagto),
-      valor: String(valor)
+      local: event.location || "Não informado"
     });
 
   } catch (err) {
